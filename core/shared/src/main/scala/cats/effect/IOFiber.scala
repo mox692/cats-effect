@@ -112,10 +112,11 @@ private final class IOFiber[A](
   private[this] val IOEndFiber: IO.EndFiber.type = IO.EndFiber
 
   override def run(): Unit = {
+    // MEMO: こっちはworker threadから呼ばれるrunメソッド
     // insert a read barrier after every async boundary
     readBarrier()
     (resumeTag: @switch) match {
-      case 0 => execR()
+      case 0 => execR() // MEMO: 初回呼び出し時はここ
       case 1 => asyncContinueSuccessfulR()
       case 2 => asyncContinueFailedR()
       case 3 => asyncContinueCanceledR()
@@ -193,6 +194,7 @@ private final class IOFiber[A](
   }
 
   /* masks encoding: initMask => no masks, ++ => push, -- => pop */
+  // MEMO: こちらはFiberのrunLoop (workerpoolにも似たようなrunloopがある)
   @tailrec
   private[this] def runLoop(
       _cur0: IO[Any],
@@ -688,6 +690,7 @@ private final class IOFiber[A](
             @tailrec
             def stateLoop(): Unit = {
               val tag = state.get()
+              // MEMO: 待ちの状態だったら、stealを試みる?
               if (tag <= ContStateWaiting) {
                 if (!state.compareAndSet(tag, ContStateWinner)) stateLoop()
                 else {
@@ -946,10 +949,12 @@ private final class IOFiber[A](
             val ec = currentCtx
             if (ec.isInstanceOf[WorkStealingThreadPool]) {
               val wstp = ec.asInstanceOf[WorkStealingThreadPool]
+              // MEMO: ここの canExecuteBlockingCode の意味がよく分からない...
               if (wstp.canExecuteBlockingCode()) {
                 var error: Throwable = null
                 val r =
                   try {
+                    // MEMO: scalaの標準にこんなAPIがあるの知らんかった...
                     scala.concurrent.blocking(cur.thunk())
                   } catch {
                     case t if NonFatal(t) =>
@@ -961,6 +966,7 @@ private final class IOFiber[A](
                 val next = if (error eq null) succeeded(r, 0) else failed(error, 0)
                 runLoop(next, nextCancelation, nextAutoCede)
               } else {
+                // MEMO: blockingのfiberコードだった場合、blocking用のpoolにfallbackする
                 blockingFallback(cur)
               }
             } else {
@@ -1314,6 +1320,7 @@ private final class IOFiber[A](
       objectState.init(16)
       finalizers.init(16)
 
+      // MEMO: new IOFiber()する時に引数で渡される初期IOがresumeIOになる
       val io = resumeIO.asInstanceOf[IO[Any]]
       resumeIO = null
       runLoop(io, runtime.cancelationCheckThreshold, runtime.autoYieldThreshold)

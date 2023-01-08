@@ -376,11 +376,11 @@ trait IOApp {
     val queue = this.queue
 
     val fiber =
-      JvmCpuStarvationMetrics()
+      JvmCpuStarvationMetrics() // Resource[IO, CpuStarvationMetrics] 
         .flatMap { cpuStarvationMetrics =>
           CpuStarvationCheck.run(runtimeConfig, cpuStarvationMetrics).background
-        }
-        .surround(ioa)
+        }               // Resource[IO,  IO[Nothing]] 
+        .surround(ioa)  // IO[ExitCode] (JvmCpuStarvationMetricsのresourceの生成を無視して(ただしActionの実行は行う？？)、IO[ExitCode]に処理を継続させる)
         .unsafeRunFiber(
           {
             if (counter.decrementAndGet() == 0) {

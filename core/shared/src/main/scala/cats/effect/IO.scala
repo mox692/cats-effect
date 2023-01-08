@@ -958,6 +958,7 @@ sealed abstract class IO[+A] private () extends IOPlatform[A] {
       runtime.fiberErrorCbs.put(failure)
     }
 
+    // MEMO: computeノードの方は先に実行させるの？
     runtime.compute.execute(fiber)
     fiber
   }

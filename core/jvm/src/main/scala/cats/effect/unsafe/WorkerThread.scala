@@ -386,6 +386,7 @@ private final class WorkerThread(
             // local queue. Notify other worker threads.
             pool.notifyParked(rnd)
 
+            // MEMO: ここでqueueからfiberを取り出して、そのRunを実行している？
             try fiber.run()
             catch {
               case t if NonFatal(t) => pool.reportFailure(t)
@@ -619,6 +620,7 @@ private final class WorkerThread(
    *   There is no reason to enclose any code in a `try/catch` block because the only way this
    *   code path can be exercised is through `IO.delay`, which already handles exceptions.
    */
+  // MEMO: scalaのBlockContextを継承していることに注意
   override def blockOn[T](thunk: => T)(implicit permission: CanAwait): T = {
     val rnd = random
 
@@ -638,6 +640,7 @@ private final class WorkerThread(
 
       val prefix = pool.blockerThreadPrefix
       // Set the name of this thread to a blocker prefixed name.
+      // MEMO: このスレッド自体に名前をつけてるの？謎
       setName(s"$prefix-$nameIndex")
 
       val cached = pool.cachedThreads.pollFirst()

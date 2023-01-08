@@ -107,6 +107,7 @@ private[effect] final class WorkStealingThreadPool(
   private[unsafe] val blockedWorkerThreadNamingIndex: AtomicInteger = new AtomicInteger(0)
 
   // Thread pool initialization block.
+  // MEMO: こんなとこに副作用あるコード書いてるのかw
   {
     // Set up the worker threads.
     var i = 0
@@ -423,6 +424,7 @@ private[effect] final class WorkStealingThreadPool(
    */
   private[this] def scheduleExternal(fiber: Runnable): Unit = {
     val random = ThreadLocalRandom.current()
+    // MEMO: 外部キューにfiberを追加
     externalQueue.offer(fiber, random)
     notifyParked(random)
     ()
@@ -500,6 +502,8 @@ private[effect] final class WorkStealingThreadPool(
         scheduleExternal(runnable)
       }
     } else {
+      // MEMO: 一番初めに通る時は WorkerThread ではないっぽい(ここに来た)
+      //       
       scheduleExternal(runnable)
     }
   }
