@@ -57,19 +57,22 @@ class MemoizeSpec extends BaseSpec with Discipline {
 
     "Concurrent.memoize evaluates effect once if inner `F[A]` is bound twice" in ticked {
       implicit ticker =>
+        // MEMO: memoizのめちゃわかりやすい使い方
         val op = for {
           ref <- Ref.of[F, Int](0)
           action = ref.modify { s =>
             val ns = s + 1
+            // MEMO: modifyがkey-valueを返すようにする設計はなんなんだろうw
             ns -> ns
           }
+          // MEMO: actionをメモ化している
           memoized <- Concurrent[F].memoize(action)
           x <- memoized
           y <- memoized
           v <- ref.get
         } yield (x, y, v)
 
-        val result = lowerK(op).unsafeToFuture()
+        val result = lowerK(op).unsafeToFuture() // F[(Int, Int, Int)] => IO[(...)]
         ticker.ctx.tick()
 
         result.value mustEqual Some(Success((1, 1, 1)))

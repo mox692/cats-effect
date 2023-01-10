@@ -44,8 +44,10 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
     import Memoize._
     implicit val F: GenConcurrent[F, E] = this
 
+    // MEMO: 初期はUnevaluated
     ref[Memoize[F, E, A]](Unevaluated()) map { state =>
       def eval: F[A] =
+        // MEMO: latchパターン
         deferred[Unit] flatMap { latch =>
           uncancelable { poll =>
             state.modify {
@@ -60,11 +62,15 @@ trait GenConcurrent[F[_], E] extends GenSpawn[F, E] {
                       case Outcome.Succeeded(fa) =>
                         state.set(Finished(Right(fa)))
                     }
+                    // MEMO: alias for productL
+                    // stateActionは、具体的にはRefを更新することをする
                     stateAction <* latch.complete(())
                   }
 
+                // MEMO: ここでlatch.getはblockしないのかな？
                 Evaluating(latch.get) -> go
 
+              // MEMO: 計算が始まっていたらgetにfallback
               case other =>
                 other -> poll(get)
             }.flatten
