@@ -932,6 +932,7 @@ sealed abstract class IO[+A] private () extends IOPlatform[A] {
       registerCallback: Boolean = true)(
       implicit runtime: unsafe.IORuntime): IOFiber[A @uncheckedVariance] = {
 
+    // MEMO: create IOFiber
     val fiber = new IOFiber[A](
       Map.empty,
       oc =>
@@ -959,6 +960,7 @@ sealed abstract class IO[+A] private () extends IOPlatform[A] {
     }
 
     // MEMO: computeノードの方は先に実行させるの？
+    //       IOFiber 自体がRunnableみたい
     runtime.compute.execute(fiber)
     fiber
   }

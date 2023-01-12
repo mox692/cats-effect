@@ -163,6 +163,7 @@ trait IOApp {
    * The configuration used to initialize the [[runtime]] which will evaluate the [[IO]]
    * produced by `run`. It is very unlikely that users will need to override this method.
    */
+  // MEMO: ここではデフォルトの IORuntimeConfig が取得される
   protected def runtimeConfig: unsafe.IORuntimeConfig = unsafe.IORuntimeConfig()
 
   /**
@@ -311,18 +312,25 @@ trait IOApp {
     val isForked = Thread.currentThread().getId() == 1
 
     val installed = if (runtime == null) {
+      // MEMO: 初めは runtime == null なのでここにくる
       import unsafe.IORuntime
 
       val installed = IORuntime installGlobal {
+        // MEMO: このclosureの中が (global) runtime を生成しているところ
+        
+        // MEMO: compute-pool と compute-pool のシャットダウンがtupleで返されている
         val (compute, compDown) =
           IORuntime.createWorkStealingComputeThreadPool(
             threads = computeWorkerThreadCount,
             reportFailure = t => reportFailure(t).unsafeRunAndForgetWithoutCallback()(runtime))
 
+        // MEMO: blocking-pool と blocking-pool のシャットダウンがtupleで返されている
         val (blocking, blockDown) =
           IORuntime.createDefaultBlockingExecutionContext()
 
+        // MEMO: scheduler と scheduler のシャットダウンがtupleで返されている
         val (scheduler, schedDown) =
+          // TODO: このコンポーネントが何をしている？？
           IORuntime.createDefaultScheduler()
 
         IORuntime(
@@ -367,9 +375,11 @@ trait IOApp {
       }
     }
 
+    // MEMO: この rt はSacla標準のRuntimeオブジェクト
     val rt = Runtime.getRuntime()
     val counter = new AtomicInteger(1)
 
+    // MEMO: ユーザー定義のIO
     val ioa = run(args.toList)
 
     // workaround for scala#12692, dotty#16352

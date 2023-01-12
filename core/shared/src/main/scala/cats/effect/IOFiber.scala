@@ -64,6 +64,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * by the Executor read/write barriers, but their writes are
  * merely a fast-path and are not necessary for correctness.
  */
+// MEMO: fiber のエントリ
 private final class IOFiber[A](
     initState: IOLocalState,
     cb: OutcomeIO[A] => Unit,
@@ -111,6 +112,7 @@ private final class IOFiber[A](
   /* similar prefetch for EndFiber */
   private[this] val IOEndFiber: IO.EndFiber.type = IO.EndFiber
 
+  // MEMO: IOFiber の Runnable
   override def run(): Unit = {
     // MEMO: こっちはworker threadから呼ばれるrunメソッド
     // insert a read barrier after every async boundary
