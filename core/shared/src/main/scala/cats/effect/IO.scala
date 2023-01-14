@@ -960,7 +960,8 @@ sealed abstract class IO[+A] private () extends IOPlatform[A] {
     }
 
     // MEMO: computeノードの方は先に実行させるの？
-    //       IOFiber 自体がRunnableみたい
+    //       IOFiber 自体がRunnableであり、そのexecuteを呼んでいる
+    //       EDIT: ここでは IOFiber ではなく WorkStealingThreadPool の execute を呼んでるっぽい
     runtime.compute.execute(fiber)
     fiber
   }

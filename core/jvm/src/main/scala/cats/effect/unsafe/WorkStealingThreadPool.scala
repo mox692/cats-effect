@@ -57,6 +57,12 @@ import java.util.concurrent.locks.LockSupport
  * contention. Work stealing is tried using a linear search starting from a random worker thread
  * index.
  */
+// まとめ
+// * このプール内のスレッドを WorkerThread という
+// * threadCount 分のスレッドを持つ
+// * 各 WorkerThread は自身のローカルQueueを持つ
+// * WorkerThread は自分のローカルQueueが空になって暇になると、他のWorkerThreadのタスクを盗むようにPoolにけしかける
+// MEMO: ExecutionContextExecutor で、WorkStealingThreadPool のインスタンス自体が ExecutionContext として使える
 private[effect] final class WorkStealingThreadPool(
     threadCount: Int, // number of worker threads
     private[unsafe] val threadPrefix: String, // prefix for the name of worker threads
@@ -85,6 +91,7 @@ private[effect] final class WorkStealingThreadPool(
    */
   private[this] val workerThreadPublisher: AtomicBoolean = new AtomicBoolean(false)
 
+  // TODO: こいつは何？
   private[this] val externalQueue: ScalQueue[AnyRef] =
     new ScalQueue(threadCount << 2)
 
@@ -120,6 +127,7 @@ private[effect] final class WorkStealingThreadPool(
       val fiberBag = new WeakBag[Runnable]()
       fiberBags(i) = fiberBag
       val thread =
+        // core/jvm/src/main/scala/cats/effect/unsafe/WorkerThread.scala
         new WorkerThread(index, queue, parkedSignal, externalQueue, fiberBag, this)
       workerThreads(i) = thread
       i += 1
@@ -131,6 +139,8 @@ private[effect] final class WorkStealingThreadPool(
     // Start the worker threads.
     i = 0
     while (i < threadCount) {
+      // MEMO: WorkerThread の run メソッドがkickされる
+      // https://stackoverflow.com/questions/8052522/why-we-call-thread-start-method-which-in-turns-calls-run-method
       workerThreads(i).start()
       i += 1
     }
@@ -208,6 +218,7 @@ private[effect] final class WorkStealingThreadPool(
     if (!notifyShouldWakeup()) {
       // There are enough searching and/or running worker threads.
       // Unparking a new thread would probably result in unnecessary contention.
+      // MEMO: コメントの内容から察するに notifyShouldWakeup は unpark しているスレッドの数を確認していそう
       return false
     }
 
@@ -217,6 +228,7 @@ private[effect] final class WorkStealingThreadPool(
     while (i < threadCount) {
       val index = (from + i) % threadCount
 
+      // MEMO: parkしていたら true ってことかな？
       val signal = parkedSignals(index)
       if (signal.getAndSet(false)) {
         // Update the state so that a thread can be unparked.
@@ -426,6 +438,7 @@ private[effect] final class WorkStealingThreadPool(
     val random = ThreadLocalRandom.current()
     // MEMO: 外部キューにfiberを追加
     externalQueue.offer(fiber, random)
+    // MEMO: 適当な WorkerThread をunparkする (そこで引数のfiberを実行させるとかまでは読み取れなかった)
     notifyParked(random)
     ()
   }
@@ -490,10 +503,13 @@ private[effect] final class WorkStealingThreadPool(
    * @param runnable
    *   the runnable to be executed
    */
+  // MEMO: IO.scala の runtime.compute.execute(fiber) から呼ばれる
   override def execute(runnable: Runnable): Unit = {
     val pool = this
+    // TODO: これ何してんねん
     val thread = Thread.currentThread()
 
+    // TODO: WorkerThread とは？
     if (thread.isInstanceOf[WorkerThread]) {
       val worker = thread.asInstanceOf[WorkerThread]
       if (worker.isOwnedBy(pool)) {
@@ -503,7 +519,7 @@ private[effect] final class WorkStealingThreadPool(
       }
     } else {
       // MEMO: 一番初めに通る時は WorkerThread ではないっぽい(ここに来た)
-      //       
+      //       ↑のコメントの Furthermore の部分かな？
       scheduleExternal(runnable)
     }
   }

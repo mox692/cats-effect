@@ -41,6 +41,7 @@ import java.util.concurrent.locks.LockSupport
  * system when compared to a fixed size thread pool whose worker threads all draw tasks from a
  * single global work queue.
  */
+// MEMO: called from `core/jvm/src/main/scala/cats/effect/unsafe/WorkStealingThreadPool.scala`
 private final class WorkerThread(
     idx: Int,
     // Local queue instance with exclusive write access.
@@ -336,6 +337,7 @@ private final class WorkerThread(
         try {
           val len = runtimeBlockingExpiration.length
           val unit = runtimeBlockingExpiration.unit
+          // MEMO: blockingQueue から(制限時間付きで)データを取得
           var newIdx: Integer = indexTransfer.poll(len, unit)
           if (newIdx eq null) {
             // The timeout elapsed and no one woke up this thread. Try to remove

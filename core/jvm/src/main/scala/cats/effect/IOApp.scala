@@ -377,6 +377,7 @@ trait IOApp {
 
     // MEMO: この rt はSacla標準のRuntimeオブジェクト
     val rt = Runtime.getRuntime()
+    // TODO: 子の AtomicCounter が何に使われているか
     val counter = new AtomicInteger(1)
 
     // MEMO: ユーザー定義のIO
