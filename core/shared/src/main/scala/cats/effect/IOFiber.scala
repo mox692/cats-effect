@@ -97,6 +97,8 @@ private final class IOFiber[A](
    * Ideally these would be on the stack, but they can't because we sometimes need to
    * relocate our runloop to another fiber.
    */
+  // MEMO: IO-runLoop における自前stack??
+  // core/js-native/src/main/scala/cats/effect/IOFiberConstants.scala に定数の定義がある
   private[this] var conts: ByteStack = _
 
   private[this] var canceled: Boolean = false
@@ -213,6 +215,8 @@ private final class IOFiber[A](
     }
 
     var nextCancelation = cancelationIterations - 1
+    // MEMO: autoCedeについて: https://discord.com/channels/632277896739946517/632278585700384799/1003185107252822016
+    //                        https://github.com/typelevel/cats-effect/pull/1340
     var nextAutoCede = autoCedeIterations
     if (nextCancelation <= 0) {
       // Ensure that we see cancelation.
@@ -221,7 +225,9 @@ private final class IOFiber[A](
       // automatic yielding threshold is always a multiple of the cancelation threshold
       nextAutoCede -= nextCancelation
 
+      // MEMO: AutoCede発火
       if (nextAutoCede <= 0) {
+        // MEMO: AutoCedeR で再開
         resumeTag = AutoCedeR
         resumeIO = _cur0
         val ec = currentCtx
@@ -246,6 +252,9 @@ private final class IOFiber[A](
        * The cases have to use continuous constants to generate a `tableswitch`.
        * Do not name or reorder them.
        */
+
+      // MEMO: 最初は core/jvm/src/main/scala/cats/effect/metrics/JvmCpuStarvationMetrics.scala の
+      //       IO.delay(ManagementFactory.getPlatformMBeanServer) のIOから処理が始まる (tagで言うと `2` )
       (cur0.tag: @switch) match {
         case 0 =>
           val cur = cur0.asInstanceOf[Pure[Any]]
@@ -320,6 +329,7 @@ private final class IOFiber[A](
             if (error == null) succeeded(result, 0) else failed(error, 0)
           }
 
+          // MEMO: 現在のIOのtagを見る
           (ioe.tag: @switch) match {
             case 0 =>
               val pure = ioe.asInstanceOf[Pure[Any]]
@@ -363,6 +373,7 @@ private final class IOFiber[A](
               runLoop(next(ec), nextCancelation - 1, nextAutoCede)
 
             case _ =>
+              // MEMO: 何してる？
               objectState.push(f)
               conts = ByteStack.push(conts, MapK)
               runLoop(ioe, nextCancelation, nextAutoCede)
@@ -1096,6 +1107,7 @@ private final class IOFiber[A](
   private[this] def shouldFinalize(): Boolean =
     canceled && isUnmasked()
 
+  // TODO: what does mask mean ??
   private[this] def isUnmasked(): Boolean =
     masks == 0
 
@@ -1152,6 +1164,7 @@ private final class IOFiber[A](
 
   @tailrec
   private[this] def succeeded(result: Any, depth: Int): IO[Any] =
+    // TODO: 何してる？
     (ByteStack.pop(conts): @switch) match {
       case 0 => // mapK
         val f = objectState.pop().asInstanceOf[Any => Any]
@@ -1279,6 +1292,7 @@ private final class IOFiber[A](
       val wstp = ec.asInstanceOf[WorkStealingThreadPool]
       wstp.reschedule(fiber)
     } else {
+      // MEMO: IO.evalOn() とかでECが変わるパターンとか？？
       scheduleOnForeignEC(ec, fiber)
     }
   }

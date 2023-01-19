@@ -195,6 +195,7 @@ trait IOPlatformSpecification { self: BaseSpec with ScalaCheck =>
 
         val ec = ExecutionContext.fromExecutorService(Executors.newSingleThreadExecutor())
 
+        // TODO: 動作の意味を確認
         val run = for {
           // Run in a tight loop on single-threaded ec so only hope of
           // seeing cancelation status is auto-cede
