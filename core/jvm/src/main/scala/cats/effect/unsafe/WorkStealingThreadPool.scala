@@ -504,12 +504,13 @@ private[effect] final class WorkStealingThreadPool(
    *   the runnable to be executed
    */
   // MEMO: IO.scala の runtime.compute.execute(fiber) から呼ばれる
+  //       ここの引数の runnable は new IOFiber[A](...) によって作成されたfiberで
+  //       その箇所で最初のIOとかの設定は済んでいる
   override def execute(runnable: Runnable): Unit = {
     val pool = this
     // TODO: これ何してんねん
     val thread = Thread.currentThread()
 
-    // TODO: WorkerThread とは？
     if (thread.isInstanceOf[WorkerThread]) {
       val worker = thread.asInstanceOf[WorkerThread]
       if (worker.isOwnedBy(pool)) {

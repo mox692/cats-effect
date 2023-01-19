@@ -207,6 +207,7 @@ private final class IOFiber[A](
      * either because the entire IO is done, or because this branch is done
      * and execution is continuing asynchronously in a different runloop invocation.
      */
+    // MEMO: cur が IOEndFiber だったら、すぐにrunLoopを抜ける
     if (_cur0 eq IOEndFiber) {
       return
     }
@@ -1316,6 +1317,7 @@ private final class IOFiber[A](
     if (canceled) {
       done(IOFiber.OutcomeCanceled.asInstanceOf[OutcomeIO[A]])
     } else {
+      // TODO: この辺何してる？
       conts = ByteStack.create(16)
       conts = ByteStack.push(conts, RunTerminusK)
 
