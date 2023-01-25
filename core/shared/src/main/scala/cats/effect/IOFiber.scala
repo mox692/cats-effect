@@ -84,6 +84,7 @@ private final class IOFiber[A](
 
   private[this] var localState: IOLocalState = initState
   private[this] var currentCtx: ExecutionContext = startEC
+  // TODO: 何してる？ 任意のデータを詰めるstack的な？
   private[this] val objectState: ArrayStack[AnyRef] = ArrayStack()
   private[this] val finalizers: ArrayStack[IO[Unit]] = ArrayStack()
   private[this] val callbacks: CallbackStack[OutcomeIO[A]] = CallbackStack(cb)
