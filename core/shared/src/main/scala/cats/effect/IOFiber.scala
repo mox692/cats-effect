@@ -258,6 +258,8 @@ private final class IOFiber[A](
       (cur0.tag: @switch) match {
         case 0 =>
           val cur = cur0.asInstanceOf[Pure[Any]]
+          // MEMO: (変換ではない)純粋な値が得られるような cur であれば、succeedに処理を進めてstackを消費する.
+          //       一方、変換系(Map, FlatMap)とかは、stackに処理内容を示すデータをpushして、直ちにrunLoopに制御を戻す
           runLoop(succeeded(cur.value, 0), nextCancelation, nextAutoCede)
 
         case 1 =>
@@ -1165,6 +1167,8 @@ private final class IOFiber[A](
   @tailrec
   private[this] def succeeded(result: Any, depth: Int): IO[Any] =
     // TODO: 何してる？
+    // MEMO: succeeded はPureな値が得られた際に呼ばれる(と思う).
+     //       そしてこのsucceeedの中でStackに積まれている変換処理を逐次実行していく.
     (ByteStack.pop(conts): @switch) match {
       case 0 => // mapK
         val f = objectState.pop().asInstanceOf[Any => Any]
