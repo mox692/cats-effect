@@ -131,6 +131,7 @@ object AtomicCell {
     /**
      * Initializes the `AtomicCell` using the provided value.
      */
+    // MEMO: AtomicCell が内部的にMutexを使っている、って構造みたい.(先にMutex読めばよかった...)
     def of[A](init: A)(implicit F: Async[F]): F[AtomicCell[F, A]] =
       Mutex[F].map(mutex => new Impl(init, mutex))
 
