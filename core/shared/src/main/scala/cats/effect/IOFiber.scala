@@ -875,6 +875,7 @@ private final class IOFiber[A](
           runLoop(succeeded(fiber, 0), nextCancelation, nextAutoCede)
 
         case 18 =>
+          // MEMO: discussed in https://discord.com/channels/632277896739946517/632278585700384799/1054051726384181308
           val cur = cur0.asInstanceOf[RacePair[Any, Any]]
 
           val next =
