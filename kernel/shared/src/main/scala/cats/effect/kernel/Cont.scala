@@ -59,6 +59,8 @@ import cats.~>
  * override `Async[F].async` with your implementation, and use `Async.defaultCont` to implement
  * `Async[F].cont`.
  */
+// MEMO: K -> その継続における返り値の型
+//       R -> next(次のrunloopに渡すIOの中身)の型
 trait Cont[F[_], K, R] extends Serializable {
   def apply[G[_]](
       implicit
