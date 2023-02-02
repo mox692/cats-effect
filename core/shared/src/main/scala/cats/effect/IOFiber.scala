@@ -419,6 +419,8 @@ private final class IOFiber[A](
               }
 
               // this code is inlined in order to avoid two `try` blocks
+              // MEMO: asyncのuncancelable blockを計算していた場合、
+              // ここの箇所でpoll(get)のIOが得られる. そして次にCont#GETのrunLoopに遷移する
               val result =
                 try f(delay.thunk())
                 catch {
@@ -735,7 +737,7 @@ private final class IOFiber[A](
             stateLoop()
           }
 
-          // MEMO: 次のIOとして IOCont.Get (tag = 15) をせっと
+          // MEMO: (IO.cancellableの)次のIOとして IOCont.Get (tag = 15) をせっと
           val get: IO[Any] = IOCont.Get(state)
 
           // TODO: ここのapplyの実装どこ？ -> IO.scala#async あたり!
