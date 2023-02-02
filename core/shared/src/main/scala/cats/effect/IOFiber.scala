@@ -75,6 +75,7 @@ private final class IOFiber[A](
     with FiberIO[A]
     with Runnable {
   /* true when fiber blocking (ensures that we only unblock *once*) */
+  // TODO: これってどこで使われる？
   suspended: AtomicBoolean =>
 
   import IOFiber._
@@ -665,7 +666,7 @@ private final class IOFiber[A](
                      */
                     resumeTag = AsyncContinueCanceledR
                   }
-                  // MEMO: 別のECにこのfiberを投げている箇所
+                  // MEMO: 現在のECにこのfiberを(再度)投げている箇所
                   scheduleFiber(ec, this)
                 } else {
                   /*
@@ -709,6 +710,7 @@ private final class IOFiber[A](
              */
             @tailrec
             def stateLoop(): Unit = {
+              // MEMO: 初期であれば tag == 0
               val tag = state.get()
               // MEMO: 待ちの状態だったら、stealを試みる?
               if (tag <= ContStateWaiting) {
@@ -762,6 +764,7 @@ private final class IOFiber[A](
           finalizers.push(fin)
           conts = ByteStack.push(conts, OnCancelK)
 
+          // MEMO: ここで初めて ContStateInitial を切り替える. (cbの実行)
           if (state.compareAndSet(ContStateInitial, ContStateWaiting)) {
             /*
              * `state` was Initial, so `get` has arrived before the callback,
