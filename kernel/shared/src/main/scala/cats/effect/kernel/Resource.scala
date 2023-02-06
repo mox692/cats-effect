@@ -170,9 +170,11 @@ sealed abstract class Resource[F[_], +A] extends Serializable {
     @tailrec def loop[C](current: Resource[F, C], stack: Stack[C]): F[B] =
       current match {
         case Allocate(resource) =>
+          // MEMO: この先のbracketFullで実際にリソースのallocを実施
           F.bracketFull(resource) {
             case (a, _) =>
               stack match {
+                // MEMO: serverの場合は、ここで F.neverとかが呼ばれる
                 case Nil => onOutput(a)
                 case Frame(head, tail) => continue(head(a), tail)
               }
@@ -769,6 +771,7 @@ object Resource extends ResourceFOInstances0 with ResourceHOInstances0 with Reso
    * @param resource
    *   an effect that returns a tuple of a resource and an effect to release it
    */
+  // MEMO: Resource作成のエントリ
   def apply[F[_], A](resource: F[(A, F[Unit])])(implicit F: Functor[F]): Resource[F, A] =
     applyCase[F, A] {
       resource.map {
@@ -822,6 +825,8 @@ object Resource extends ResourceFOInstances0 with ResourceHOInstances0 with Reso
    *   an effect that returns a tuple of a resource and an effectful function to release it,
    *   where acquisition can potentially be interrupted
    */
+  // MEMO: applyからかなり原型をとどめていないが、一応これが元もprimitive
+  // TODO: インタープリタ側も確認する
   def applyFull[F[_], A](resource: Poll[F] => F[(A, ExitCase => F[Unit])]): Resource[F, A] =
     Allocate(resource)
 
@@ -1118,6 +1123,7 @@ object Resource extends ResourceFOInstances0 with ResourceHOInstances0 with Reso
   /**
    * `Resource` data constructor that encodes the `flatMap` operation.
    */
+  // MEMO: runLoopの時と同じようなエンコーディング
   final case class Bind[F[_], S, +A](source: Resource[F, S], fs: S => Resource[F, A])
       extends Resource[F, A]
 
