@@ -75,6 +75,7 @@ private final class IOFiber[A](
     with FiberIO[A]
     with Runnable {
   /* true when fiber blocking (ensures that we only unblock *once*) */
+  // TODO: これってどこで使われる？
   suspended: AtomicBoolean =>
 
   import IOFiber._
@@ -418,6 +419,8 @@ private final class IOFiber[A](
               }
 
               // this code is inlined in order to avoid two `try` blocks
+              // MEMO: asyncのuncancelable blockを計算していた場合、
+              // ここの箇所でpoll(get)のIOが得られる. そして次にCont#GETのrunLoopに遷移する
               val result =
                 try f(delay.thunk())
                 catch {
@@ -622,6 +625,8 @@ private final class IOFiber[A](
            */
           val state = new ContState(finalizing)
 
+          // MEMO: 長らく謎だった、「asyncのcbは誰が生成しているのか」問題、こいつが正体みたい
+          // asyncでuserが定義したcbに対する、その続きの処理のハンドラ.
           val cb: Either[Throwable, Any] => Unit = { e =>
             /*
              * We *need* to own the runloop when we return, so we CAS loop
@@ -663,6 +668,7 @@ private final class IOFiber[A](
                      */
                     resumeTag = AsyncContinueCanceledR
                   }
+                  // MEMO: 現在のECにこのfiberを(再度)投げている箇所
                   scheduleFiber(ec, this)
                 } else {
                   /*
@@ -706,11 +712,14 @@ private final class IOFiber[A](
              */
             @tailrec
             def stateLoop(): Unit = {
+              // MEMO: 初期であれば tag == 0
               val tag = state.get()
               // MEMO: 待ちの状態だったら、stealを試みる?
               if (tag <= ContStateWaiting) {
                 if (!state.compareAndSet(tag, ContStateWinner)) stateLoop()
                 else {
+                  // MEMO: async { cb => ... cb(.) ... } のcbの引数がeとして渡ってくる
+                  // TODO: この時点で別のECでasyncの中の計算が行われているはず？...でもスレッド選択してる箇所とかなさそう...
                   state.result = e
                   // The winner has to publish the result.
                   state.set(ContStateResult)
@@ -728,8 +737,14 @@ private final class IOFiber[A](
             stateLoop()
           }
 
+          // MEMO: (IO.cancellableの)次のIOとして IOCont.Get (tag = 15) をせっと
           val get: IO[Any] = IOCont.Get(state)
 
+          // TODO: ここのapplyの実装どこ？ -> IO.scala#async あたり!
+          // MEMO: cb は IO.async#async で resume になっているものに対応?
+          // MEMO: Cont.apply に対応して、実際にここでactionを実行してnextを得ていそう？
+          //         -> 違いそう、ここではuncancelable(12)だけを返してのちのrunLoopに移譲してそう
+          //            厳密には UncancelableのrunLoop(12)のrunLoop(cur.body(poll) ... )の箇所で計算を実行していそう
           val next = body[IO].apply(cb, get, FunctionK.id)
 
           runLoop(next, nextCancelation, nextAutoCede)
@@ -751,6 +766,7 @@ private final class IOFiber[A](
           finalizers.push(fin)
           conts = ByteStack.push(conts, OnCancelK)
 
+          // MEMO: ここで初めて ContStateInitial を切り替える. (cbの実行)
           if (state.compareAndSet(ContStateInitial, ContStateWaiting)) {
             /*
              * `state` was Initial, so `get` has arrived before the callback,
@@ -875,6 +891,7 @@ private final class IOFiber[A](
           runLoop(succeeded(fiber, 0), nextCancelation, nextAutoCede)
 
         case 18 =>
+          // MEMO: discussed in https://discord.com/channels/632277896739946517/632278585700384799/1054051726384181308
           val cur = cur0.asInstanceOf[RacePair[Any, Any]]
 
           val next =

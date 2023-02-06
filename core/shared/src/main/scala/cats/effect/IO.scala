@@ -1112,10 +1112,19 @@ object IO extends IOCompanionPlatform with IOLowPriorityImplicits {
    */
   def async[A](k: (Either[Throwable, A] => Unit) => IO[Option[IO[Unit]]]): IO[A] = {
     val body = new Cont[IO, A, A] {
+      // MEMO: 
+      // k: 非同期に行いたい処理. 別fiberで実行される可能性あり.結果をresume(Either[Throwable, Any] => Unit)に渡すことになる
+      // resume: このfiberがkの後に行う処理(≒cbの引数が渡される処理.)
+      // get: stateを保持しているshared object的なもの. 次のContGetのIOに渡すイメージ
+      // apply:
       def apply[G[_]](implicit G: MonadCancel[G, Throwable]) = { (resume, get, lift) =>
+        // applyが呼ばれた時自体は、ここのcancellableを返してすぐにreturnする
         G.uncancelable { poll =>
+          // Uncancelable のrunLoopでここが呼ばれる
           lift(k(resume)) flatMap {
+            // k -> resume と処理が流れて、resumeが終了するとここにくる
             case Some(fin) => G.onCancel(poll(get), lift(fin))
+            // 次のIOとしてIO[ContState]を返す.
             case None => poll(get)
           }
         }
@@ -1874,6 +1883,7 @@ object IO extends IOCompanionPlatform with IOLowPriorityImplicits {
     }
   }
 
+  // MEMO: 
   // Low level construction that powers `async`
   private[effect] final case class IOCont[K, R](body: Cont[IO, K, R], event: TracingEvent)
       extends IO[R] {

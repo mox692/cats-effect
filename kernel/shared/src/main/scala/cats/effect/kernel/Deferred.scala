@@ -135,10 +135,15 @@ object Deferred {
           case State.Set(a) =>
             F.pure(a)
           case State.Unset(_, _) =>
+            // MEMO: asyncを呼び出して、すぐreturnする
+            // should return F[A]
             F.async[A] { cb =>
+              // MEMO: 結果が生成されてresumeされたときに行う処理(?)
               val resume = (a: A) => cb(Right(a))
+              // should return F[Option[F[Unit]]]
               F.delay(addReader(awakeReader = resume)).map { id =>
                 // if canceled
+                // should return Option[F[Unit]]
                 F.delay(deleteReader(id)).some
               }
             }
