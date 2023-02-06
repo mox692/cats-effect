@@ -222,6 +222,7 @@ sealed abstract class Resource[F[_], +A] extends Serializable {
    *
    * The finalisers run when the resulting program fails or gets interrupted.
    */
+  // MEMO: never ->  alias for `async(_ => ())`
   def useForever(implicit F: Spawn[F]): F[Nothing] =
     use[Nothing](_ => F.never)
 
