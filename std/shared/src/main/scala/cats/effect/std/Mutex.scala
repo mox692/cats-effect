@@ -70,6 +70,7 @@ object Mutex {
   /**
    * Creates a new `Mutex`. Like `apply` but initializes state using another effect constructor.
    */
+  // MEMO:  Mutexの操作自体のeffect -> G, Mutex作成自体のeffect -> F
   def in[F[_], G[_]](implicit F: Sync[F], G: Async[G]): F[Mutex[G]] =
     Semaphore.in[F, G](n = 1).map(sem => new Impl(sem))
 

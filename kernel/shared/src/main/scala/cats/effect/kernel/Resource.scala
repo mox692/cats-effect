@@ -172,6 +172,7 @@ sealed abstract class Resource[F[_], +A] extends Serializable {
         case Allocate(resource) =>
           // MEMO: この先のbracketFullで実際にリソースのallocを実施
           F.bracketFull(resource) {
+            // MEMO: ここは？？
             case (a, _) =>
               stack match {
                 // MEMO: serverの場合は、ここで F.neverとかが呼ばれる
@@ -205,6 +206,7 @@ sealed abstract class Resource[F[_], +A] extends Serializable {
    * @return
    *   the result of applying [F] to
    */
+  // MEMO: serverの場合、 f: _ => F.never みたいに、serverには実際触れない感じになる
   def use[B](f: A => F[B])(implicit F: MonadCancel[F, Throwable]): F[B] =
     fold(f, _.apply(_))
 
