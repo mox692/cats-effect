@@ -353,6 +353,7 @@ private final class IOFiber[A](
               // this code is inlined in order to avoid two `try` blocks
               var error: Throwable = null
               val result =
+                // MEMO: thunkをここで評価！！
                 try f(delay.thunk())
                 catch {
                   case t if NonFatal(t) =>
