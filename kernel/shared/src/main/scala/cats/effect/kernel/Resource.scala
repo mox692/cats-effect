@@ -573,6 +573,8 @@ sealed abstract class Resource[F[_], +A] extends Serializable {
    * Acquires the resource, runs `gb` and closes the resource once `gb` terminates, fails or
    * gets interrupted
    */
+  // gbを実行し完了次第resourceをcloseする
+  // MEMO: mutex.lock.surround のパターンで良くみる
   def surround[B](gb: F[B])(implicit F: MonadCancel[F, Throwable]): F[B] =
     use(_ => gb)
 

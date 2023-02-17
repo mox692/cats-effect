@@ -518,6 +518,8 @@ private final class IOFiber[A](
           }
 
           objectState.push(cur.f)
+          // MEMO: HandleErrorWithKをstackに積んでおく
+          //       OnCancelKとかと競合した時は後に積んだものが先に呼ばれるようになっている
           conts = ByteStack.push(conts, HandleErrorWithK)
 
           runLoop(cur.ioa, nextCancelation, nextAutoCede)
@@ -1274,6 +1276,7 @@ private final class IOFiber[A](
     (ByteStack.pop(conts): @switch) match {
       /* (case 0) will never continue to mapK */
       /* (case 1) will never continue to flatMapK */
+      // MEMO: fail状態において、mapとfaltMapは実行しない
       case 0 | 1 =>
         objectState.pop()
         failed(error, depth)
