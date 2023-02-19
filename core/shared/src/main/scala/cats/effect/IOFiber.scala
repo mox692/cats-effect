@@ -310,6 +310,10 @@ private final class IOFiber[A](
           runLoop(succeeded(currentCtx, 0), nextCancelation, nextAutoCede)
 
         case 6 =>
+          // - 対応関係
+          // (a).map(f)
+          // a -> cur.ioe
+          // f -> cur.f
           val cur = cur0.asInstanceOf[Map[Any, Any]]
 
           if (isStackTracing) {
@@ -333,9 +337,10 @@ private final class IOFiber[A](
             if (error == null) succeeded(result, 0) else failed(error, 0)
           }
 
-          // MEMO: 現在のIOのtagを見る
+          // MEMO: mapされる対象(cur.ioe)のtagを見る
           (ioe.tag: @switch) match {
             case 0 =>
+              // Pureだった場合、単純に値(pure.value)を取り出してnextに私、次のIOをrunLoopに渡す
               val pure = ioe.asInstanceOf[Pure[Any]]
               runLoop(next(pure.value), nextCancelation - 1, nextAutoCede)
 
@@ -344,6 +349,8 @@ private final class IOFiber[A](
               runLoop(failed(error.t, 0), nextCancelation - 1, nextAutoCede)
 
             case 2 =>
+              // Delayだった場合、先にdelayを実行し、その結果に対してfを適用(mapを実行).
+              // succeed or failedでnextIOを得て、runLoopを続ける
               val delay = ioe.asInstanceOf[Delay[Any]]
 
               if (isStackTracing) {
@@ -378,7 +385,10 @@ private final class IOFiber[A](
               runLoop(next(ec), nextCancelation - 1, nextAutoCede)
 
             case _ =>
-              // MEMO: 何してる？
+              // それ以外の場合、例えば
+              //  IO.sleep(3.second).map(f)
+              // みたいなパターン. この場合は objectState と conts にデータを積むことだけをして
+              // 次のrunLoopにうつる(ioeを渡す)
               objectState.push(f)
               conts = ByteStack.push(conts, MapK)
               runLoop(ioe, nextCancelation, nextAutoCede)
@@ -1188,9 +1198,10 @@ private final class IOFiber[A](
   @tailrec
   private[this] def succeeded(result: Any, depth: Int): IO[Any] =
     // TODO: 何してる？
-    // MEMO: succeeded はPureな値が得られた際に呼ばれる(と思う).
-     //       そしてこのsucceeedの中でStackに積まれている変換処理を逐次実行していく.
+    //       そしてこのsucceeedの中でStackに積まれている変換処理を逐次実行していく.
     (ByteStack.pop(conts): @switch) match {
+      // mapKの場合、objectStateに積んでいたmapの第二引数 f をpop.
+      // 
       case 0 => // mapK
         val f = objectState.pop().asInstanceOf[Any => Any]
 
