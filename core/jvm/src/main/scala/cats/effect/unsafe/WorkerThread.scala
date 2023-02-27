@@ -318,8 +318,10 @@ private final class WorkerThread(
       }
     }
 
+    // MEMO: thread-poolがshutdownしていない間loopを継続
     while (!done.get()) {
 
+      // MEMO: blocingしてる？
       if (blocking) {
         // The worker thread was blocked before. It is no longer part of the
         // core pool and needs to be cached.
@@ -370,6 +372,7 @@ private final class WorkerThread(
         state = 4
       }
 
+      // MEMO: 一番初めはローカルキューにfiberがないはずなので、4 -> 1 みたいな繊維をするはず
       ((state & ExternalQueueTicksMask): @switch) match {
         case 0 =>
           // Obtain a fiber or batch of fibers from the external queue.
@@ -456,6 +459,8 @@ private final class WorkerThread(
           } else {
             // Could not find any fibers in the external queue. Proceed to ask
             // for permission to steal fibers from other `WorkerThread`s.
+            // MEMO: 多分だけど、最初にfiberを取得できたスレッド以外のスレッドは、みんなこのcaseに来そう
+            //       (userから提供されるfiberは1つだけなので、初めは1つのスレッドがそのfiberを持つ以外にない)
             if (pool.transitionWorkerToSearching()) {
               // Permission granted, proceed to steal.
               state = 2
@@ -512,8 +517,14 @@ private final class WorkerThread(
             }
             // Park the thread.
             parkLoop()
+
+            //
+            // sleep here...
+            //
+
             // After the worker thread has been unparked, look for work in the
             // external queue.
+            // MEMO: 起床した後にここにくる
             state = 3
           }
 
@@ -623,6 +634,9 @@ private final class WorkerThread(
    *   code path can be exercised is through `IO.delay`, which already handles exceptions.
    */
   // MEMO: scalaのBlockContextを継承していることに注意
+  //       ここはIOFiberから呼ばれるコードである点に注意
+  // blockされた時の挙動をoverrideしてる？
+  // TODO: なんで新たなWorkerThreadをspawnする必要があるのだろうか
   override def blockOn[T](thunk: => T)(implicit permission: CanAwait): T = {
     val rnd = random
 
@@ -652,6 +666,9 @@ private final class WorkerThread(
         pool.replaceWorker(idx, cached)
         // Transfer the data structures to the cached thread and wake it up.
         cached.indexTransfer.offer(idx)
+        // MEMO: init()が呼ばれるようなコードブロックに飛びそう
+        // TODO: 古いスレッドはどうするの？  cacheからwakeupする具体的な流れは？
+        //       -> 古いスレッドは
       } else {
         // Spawn a new `WorkerThread`, a literal clone of this one. It is safe to
         // transfer ownership of the local queue and the parked signal to the new
@@ -667,6 +684,7 @@ private final class WorkerThread(
           new WorkerThread(idx, queue, parked, external, fiberBag, pool)
         pool.replaceWorker(idx, clone)
         pool.blockedWorkerThreadCounter.incrementAndGet()
+        // MEMO: こっちでは明示的にcloneを呼んでいる.
         clone.start()
       }
 

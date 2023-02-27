@@ -997,6 +997,7 @@ private final class IOFiber[A](
             if (ec.isInstanceOf[WorkStealingThreadPool]) {
               val wstp = ec.asInstanceOf[WorkStealingThreadPool]
               // MEMO: ここの canExecuteBlockingCode の意味がよく分からない...
+              //       -> fiberを動かしているこのスレッドでblockignコードが実行できるか、ってこと？(だとしたらきつそう)
               if (wstp.canExecuteBlockingCode()) {
                 var error: Throwable = null
                 val r =
@@ -1014,6 +1015,7 @@ private final class IOFiber[A](
                 runLoop(next, nextCancelation, nextAutoCede)
               } else {
                 // MEMO: blockingのfiberコードだった場合、blocking用のpoolにfallbackする
+                // 多分compute pool からblockingを呼んだ場合はこっちにくるはず
                 blockingFallback(cur)
               }
             } else {
@@ -1037,6 +1039,7 @@ private final class IOFiber[A](
   }
 
   private[this] def blockingFallback(cur: Blocking[Any]): Unit = {
+    // TODO: ここの2つの変数がなにに使われているのかを確認
     resumeTag = BlockingR
     resumeIO = cur
 
@@ -1045,6 +1048,8 @@ private final class IOFiber[A](
       objectState.push(handle)
     }
 
+    // MEMO: blockingコードを専用のスレッドプールで実行
+    // TODO: この後の処理どうなる？このIOfiberがresumeTagを保持したまま別ECで実行されるのであれば納得
     val ec = runtime.blocking
     scheduleOnForeignEC(ec, this)
   }
@@ -1345,6 +1350,8 @@ private final class IOFiber[A](
 
   private[this] def scheduleOnForeignEC(ec: ExecutionContext, fiber: IOFiber[_]): Unit = {
     try {
+      // MEMO: blockingのスレッドプールはworkstrealing-poolみたいに execute のoverrideはないけど、
+      // ここの execute はなにが実行されるんだろう？(普通にRunnable(渡されたfiber)のrunメソッドが走る？)
       ec.execute(fiber)
     } catch {
       case _: RejectedExecutionException =>

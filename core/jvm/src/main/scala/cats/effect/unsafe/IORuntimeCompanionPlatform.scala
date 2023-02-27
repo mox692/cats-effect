@@ -139,6 +139,8 @@ private[unsafe] abstract class IORuntimeCompanionPlatform { this: IORuntime.type
     val executor = Executors.newCachedThreadPool { (r: Runnable) =>
       val t = new Thread(r)
       t.setName(s"${threadPrefix}-${threadCount.getAndIncrement()}")
+      // MEMO: `what is daemon thread ??`
+      // https://www.geeksforgeeks.org/daemon-thread-java/
       t.setDaemon(true)
       t
     }

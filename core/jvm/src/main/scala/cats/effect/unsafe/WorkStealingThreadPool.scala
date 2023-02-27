@@ -77,6 +77,7 @@ private[effect] final class WorkStealingThreadPool(
   /**
    * References to worker threads and their local queues.
    */
+  // Pool中のスレッドのリソース
   private[this] val workerThreads: Array[WorkerThread] = new Array(threadCount)
   private[unsafe] val localQueues: Array[LocalQueue] = new Array(threadCount)
   private[unsafe] val parkedSignals: Array[AtomicBoolean] = new Array(threadCount)
@@ -100,6 +101,7 @@ private[effect] final class WorkStealingThreadPool(
    * active (unparked) worker threads. The 16 least significant bits track the number of worker
    * threads that are searching for work to steal from other worker threads.
    */
+  // MEMO: unparked なworkerスレッド数と、strealを試みているworkerスレッド数をそれぞれ16bitで持っている
   private[this] val state: AtomicInteger = new AtomicInteger(threadCount << UnparkShift)
 
   private[unsafe] val cachedThreads: ConcurrentSkipListSet[WorkerThread] =
@@ -114,7 +116,7 @@ private[effect] final class WorkStealingThreadPool(
   private[unsafe] val blockedWorkerThreadNamingIndex: AtomicInteger = new AtomicInteger(0)
 
   // Thread pool initialization block.
-  // MEMO: こんなとこに副作用あるコード書いてるのかw
+  // MEMO: こんなとこに副作用あるコード書いてるのかw (こう書くとインスタンス化のタイミングでこのコードが走るみたい)
   {
     // Set up the worker threads.
     var i = 0
@@ -127,7 +129,8 @@ private[effect] final class WorkStealingThreadPool(
       val fiberBag = new WeakBag[Runnable]()
       fiberBags(i) = fiberBag
       val thread =
-        // core/jvm/src/main/scala/cats/effect/unsafe/WorkerThread.scala
+        // MEMO: それぞれのWorkerThreadは親のpoolへのリファレンスを持っていることに注目
+        // WorkerThreadのコード: core/jvm/src/main/scala/cats/effect/unsafe/WorkerThread.scala
         new WorkerThread(index, queue, parkedSignal, externalQueue, fiberBag, this)
       workerThreads(i) = thread
       i += 1
@@ -226,6 +229,7 @@ private[effect] final class WorkStealingThreadPool(
     val from = random.nextInt(threadCount)
     var i = 0
     while (i < threadCount) {
+      // MEMO: ここのindexの算出ロジックがよくわからん
       val index = (from + i) % threadCount
 
       // MEMO: parkしていたら true ってことかな？
@@ -248,6 +252,8 @@ private[effect] final class WorkStealingThreadPool(
         workerThreadPublisher.get()
         val worker = workerThreads(index)
         LockSupport.unpark(worker)
+
+        // MEMO: 1つのworkerスレッドがunparkできたら一旦抜ける
         return true
       }
 
@@ -439,6 +445,8 @@ private[effect] final class WorkStealingThreadPool(
     // MEMO: 外部キューにfiberを追加
     externalQueue.offer(fiber, random)
     // MEMO: 適当な WorkerThread をunparkする (そこで引数のfiberを実行させるとかまでは読み取れなかった)
+    //       -> 上のコードで externalQueue には入れているので、workerthreadを起動させるだけさせて、そのあとで
+    //          externalQueue を参照する箇所とかがあるんじゃないかなあ
     notifyParked(random)
     ()
   }

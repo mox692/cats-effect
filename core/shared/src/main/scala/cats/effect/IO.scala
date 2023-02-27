@@ -1124,7 +1124,7 @@ object IO extends IOCompanionPlatform with IOLowPriorityImplicits {
           lift(k(resume)) flatMap {
             // k -> resume と処理が流れて、resumeが終了するとここにくる
             case Some(fin) => G.onCancel(poll(get), lift(fin))
-            // 次のIOとしてIO[ContState]を返す.
+            // 次のIOとしてIO[ContState] (= IOCont.Get) を返す.
             case None => poll(get)
           }
         }
