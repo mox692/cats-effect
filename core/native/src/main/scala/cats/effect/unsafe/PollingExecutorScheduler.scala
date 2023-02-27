@@ -32,19 +32,25 @@ abstract class PollingExecutorScheduler(pollEvery: Int)
 
   private[this] var needsReschedule: Boolean = true
 
+  // MEMO: RunnableのQueueとSleepTaskのQueueの2つがある
   private[this] val executeQueue: ArrayDeque[Runnable] = new ArrayDeque
   private[this] val sleepQueue: PriorityQueue[SleepTask] = new PriorityQueue
 
   private[this] val noop: Runnable = () => ()
 
   private[this] def scheduleIfNeeded(): Unit = if (needsReschedule) {
+    // TODO: loopは別スレッドで実行されるはず、
+    //       Executorの実装を確認
+    // MEMO: work-strealingっぽいアルゴリズムが適用されてる？( ExecutionContext.globalのコメントより)
     ExecutionContext.global.execute(() => loop())
     needsReschedule = false
   }
 
+  // MEMO: nativeの(compute)thread-poolのエントリ
   final def execute(runnable: Runnable): Unit = {
     scheduleIfNeeded()
     executeQueue.addLast(runnable)
+    // MEMO: 起動したスレッド(loopを別スレッドで呼び出したスレッド)はここでexitする
   }
 
   final def sleep(delay: FiniteDuration, task: Runnable): Runnable =
@@ -98,6 +104,9 @@ abstract class PollingExecutorScheduler(pollEvery: Int)
     while (continue) {
       // execute the timers
       val now = monotonicNanos()
+
+      // MEMO: timer完了taskを実行する
+      // queuがからじゃない && 時間切れtimerが存在する
       while (!sleepQueue.isEmpty() && sleepQueue.peek().at <= now) {
         val task = sleepQueue.poll()
         try task.runnable.run()
@@ -107,9 +116,11 @@ abstract class PollingExecutorScheduler(pollEvery: Int)
         }
       }
 
+      // MEMO: pollEveryはデフォルトで64
       // do up to pollEvery tasks
       var i = 0
       while (i < pollEvery && !executeQueue.isEmpty()) {
+        // TODO: これqueueに64個もtaskが積まれる状況ってどんな状況？？
         val runnable = executeQueue.poll()
         try runnable.run()
         catch {
