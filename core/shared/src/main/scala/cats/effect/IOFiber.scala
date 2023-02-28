@@ -609,6 +609,11 @@ private final class IOFiber[A](
            * on `get`, which are unsafe since `get` closes over the
            * runloop.
            *
+           * // MEMO
+           * cb` (コールバック) と `get` を受け取り、
+           * それらを使って非同期な計算を埋め込む IO を返す。これは、高ランクの多相性を利用して
+           * `get` に対する同時実行を静的に禁止する CPS エンコーディングである。
+           * `get` は runloop の上で閉じてしまうので、安全とは言えない。
            */
           val body = cur.body
 
@@ -634,7 +639,13 @@ private final class IOFiber[A](
            * In case of interruption, neither side will continue,
            * and they will negotiate ownership with `cancel` to decide who
            * should run the finalisers (i.e. call `asyncCancel`).
-           *
+           * 
+           * `get` と `cb` (コールバック) はランループの上で競合する。cb` が `get` よりも後に終了した場合、
+           * `get` は単にサスペンドして終了し、 `cb` は `asyncContinue` を介してランループを再開します。
+           *  もし `get` が勝ったら、 `state` `AtomicRef` から結果を取得して処理を継続し、コールバックはそのまま終了する(`stateLoop`, when `tag == 3`) 
+           *  双方は `state` を通じて互いに通信し、誰が引き継ぐべきか、
+           *  また `suspended` (suspend と resume を通じて操作される) を通じて、ランループの所有権を取り交わすことができる。
+           *  中断された場合、どちらの側も続行せず、 `cancel` を使って所有権を交渉し、どちらがファイナライザーを実行するかを決定します (つまり、 `asyncCancel` を呼び出します)。
            */
           val state = new ContState(finalizing)
 
@@ -650,6 +661,11 @@ private final class IOFiber[A](
              *
              * If we were canceled, `cb`, `cancel` and `get` are in a 3-way race
              * to run the finalizers.
+             *  
+             * そこで、`get`によって `state` がセットされたけれども `suspend()` がまだ実行されていないという競合状態を解消するために、
+             * (`resume` によって) `suspended` で CAS ループを構成します。もし `state` が設定されていれば、
+             *  `suspend()` はそのすぐ後ろにあるはずです *ただし、キャンセルされた場合はこの限りではありません*。
+             * もしキャンセルされていれば、 `cb`、`cancel`、`get` がファイナライザーを実行するために三つ巴の競争をしていることになります。
              */
             @tailrec
             def loop(): Unit = {
@@ -663,6 +679,7 @@ private final class IOFiber[A](
                     state.handle.deregister()
                   }
 
+                  // MEMO: cats-effect側のcontext
                   val ec = currentCtx
                   if (!shouldFinalize()) {
                     /* we weren't canceled or completed, so schedule the runloop for execution */
@@ -727,8 +744,8 @@ private final class IOFiber[A](
             def stateLoop(): Unit = {
               // MEMO: 初期であれば tag == 0
               val tag = state.get()
-              // MEMO: 待ちの状態だったら、stealを試みる?
               if (tag <= ContStateWaiting) {
+                // MEMO: 0: まだどっちも or 1:Getが先に待っている の状態
                 if (!state.compareAndSet(tag, ContStateWinner)) stateLoop()
                 else {
                   // MEMO: async { cb => ... cb(.) ... } のcbの引数がeとして渡ってくる
@@ -737,6 +754,7 @@ private final class IOFiber[A](
                   // The winner has to publish the result.
                   state.set(ContStateResult)
                   if (tag == ContStateWaiting) {
+                    // MEMO: IOCont.Get の if (state.compareAndSet(ContStateInitial, ContStateWaiting)) { ... が実行された
                     /*
                      * `get` has been sequenced and is waiting
                      * reacquire runloop to continue
@@ -785,12 +803,19 @@ private final class IOFiber[A](
              * `state` was Initial, so `get` has arrived before the callback,
              * it needs to set the state to `Waiting` and suspend: `cb` will
              * resume with the result once that's ready
+             * 
+             * state` が Initial なので、 `get` はコールバックより先に到着しています。
+             * state を `Waiting` にセットして中断する必要があります:`cb` は準備ができ次第、結果を表示して再開します。
              */
 
             /*
              * we set the finalizing check to the *suspension* point, which may
              * be in a different finalizer scope than the cont itself.
              * `wasFinalizing` is published by a volatile store on `suspended`.
+             * 
+             * ファイナライズチェックを *サスペンド* ポイントに設定します。
+             * これは、コンテント自身とは異なるファイナライザースコープにある可能性があります。
+             * wasFinalizing` は `suspended` にある volatile store によって発行されます。
              */
             state.wasFinalizing = finalizing
 
