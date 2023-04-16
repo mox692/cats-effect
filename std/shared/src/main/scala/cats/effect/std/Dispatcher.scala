@@ -269,11 +269,12 @@ object Dispatcher {
 
             _ <-
               if (regs.isEmpty) {
-                F.async_[Unit] { cb =>
+                F.async[Unit] { cb =>
                   if (!latch.compareAndSet(Noop, () => cb(Completed))) {
                     // state was changed between when we last set the latch and now; complete the callback immediately
                     cb(Completed)
                   }
+                  F.pure(Some(F.unit))
                 }
               } else {
                 regs traverse_ {
