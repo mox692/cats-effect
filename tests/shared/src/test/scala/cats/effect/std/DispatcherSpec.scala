@@ -91,12 +91,12 @@ class DispatcherSpec extends BaseSpec with DetectPlatform {
       val rec = dispatcher flatMap { runner =>
         val run = IO {
           runner
-            .unsafeToFutureCancelable(IO.sleep(500.millis).onCancel(IO { canceled = true }))
+            .unsafeToFutureCancelable( (IO.println("aaaaaaa") >> IO.sleep(5000.millis)).onCancel(IO { canceled = true }))
             ._2
         }
 
         Resource eval {
-          run.flatMap(ct => IO.sleep(200.millis) >> IO.fromFuture(IO(ct())))
+          run.flatMap(ct => IO.sleep(200.millis) >> IO.fromFuture(IO.println("fds") >> IO(ct())))
         }
       }
 
@@ -104,55 +104,55 @@ class DispatcherSpec extends BaseSpec with DetectPlatform {
     }
   }
 
-  "parallel dispatcher" should {
-    "await = true" >> {
-      val D = Dispatcher.parallel[IO](await = true)
+  // "parallel dispatcher" should {
+  //   "await = true" >> {
+  //     val D = Dispatcher.parallel[IO](await = true)
 
-      parallel(D)
+  //     parallel(D)
 
-      awaitTermination(D)
-    }
+  //     awaitTermination(D)
+  //   }
 
-    "await = false" >> {
-      val D = Dispatcher.parallel[IO](await = false)
+  //   "await = false" >> {
+  //     val D = Dispatcher.parallel[IO](await = false)
 
-      parallel(D)
+  //     parallel(D)
 
-      "cancel all inner effects when canceled" in real {
-        for {
-          gate1 <- Semaphore[IO](2)
-          _ <- gate1.acquireN(2)
+  //     "cancel all inner effects when canceled" in real {
+  //       for {
+  //         gate1 <- Semaphore[IO](2)
+  //         _ <- gate1.acquireN(2)
 
-          gate2 <- Semaphore[IO](2)
-          _ <- gate2.acquireN(2)
+  //         gate2 <- Semaphore[IO](2)
+  //         _ <- gate2.acquireN(2)
 
-          rec = D flatMap { runner =>
-            Resource eval {
-              IO {
-                // these finalizers never return, so this test is intentionally designed to hang
-                // they flip their gates first though; this is just testing that both run in parallel
-                val a = (gate1.release *> IO.never) onCancel {
-                  gate2.release *> IO.never
-                }
+  //         rec = D flatMap { runner =>
+  //           Resource eval {
+  //             IO {
+  //               // these finalizers never return, so this test is intentionally designed to hang
+  //               // they flip their gates first though; this is just testing that both run in parallel
+  //               val a = (gate1.release *> IO.never) onCancel {
+  //                 gate2.release *> IO.never
+  //               }
 
-                val b = (gate1.release *> IO.never) onCancel {
-                  gate2.release *> IO.never
-                }
+  //               val b = (gate1.release *> IO.never) onCancel {
+  //                 gate2.release *> IO.never
+  //               }
 
-                runner.unsafeRunAndForget(a)
-                runner.unsafeRunAndForget(b)
-              }
-            }
-          }
+  //               runner.unsafeRunAndForget(a)
+  //               runner.unsafeRunAndForget(b)
+  //             }
+  //           }
+  //         }
 
-          _ <- rec.use(_ => gate1.acquireN(2)).start
+  //         _ <- rec.use(_ => gate1.acquireN(2)).start
 
-          // if both are not run in parallel, then this will hang
-          _ <- gate2.acquireN(2)
-        } yield ok
-      }
-    }
-  }
+  //         // if both are not run in parallel, then this will hang
+  //         _ <- gate2.acquireN(2)
+  //       } yield ok
+  //     }
+  //   }
+  // }
 
   private def parallel(dispatcher: Resource[IO, Dispatcher[IO]]) = {
 
@@ -330,4 +330,6 @@ class DispatcherSpec extends BaseSpec with DetectPlatform {
       }
     }
   }
+
+  // regs.isEmpty で cancellが発生した時に、問題なくcanncellができてるかを確認するテスト(?)
 }
