@@ -26,6 +26,7 @@ private[tracing] abstract class TracingPlatform { self: Tracing.type =>
 
   private[this] val cache = mutable.Map.empty[Class[_], TracingEvent].withDefaultValue(null)
 
+  // MEMO: closure自体をkeyにしている
   def calculateTracingEvent(key: Any): TracingEvent =
     if (LinktimeInfo.debugMode) {
       if (isCachedStackTracing) {
@@ -41,6 +42,7 @@ private[tracing] abstract class TracingPlatform { self: Tracing.type =>
       } else {
         null
       }
+      // MEMO: StackTraceを全くとらないってことあるん？
     } else null
 
   @nowarn("msg=never used")

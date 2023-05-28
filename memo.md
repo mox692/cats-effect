@@ -15,4 +15,7 @@ TODO·疑問:
   * IOFiberの大規模リファクタ
     * https://github.com/typelevel/cats-effect/pull/1609
 
-### contsの使われ方
+### Tracing things
+1. IO.scalaで DelayとかFlatMapをするときとかに、関数呼び出しのたびにclosureが保存される？
+2. IOFiber.scalaでpushTracingEvent(cur.event)とかでtracingEvents(RingBuffer)に1のClosureがつまれる
+3. tracingEvents
