@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2023 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,8 @@
 
 package cats.effect
 
-import cats.effect.metrics.JsCpuStarvationMetrics
+import cats.effect.metrics.{CpuStarvationWarningMetrics, JsCpuStarvationMetrics}
+import cats.effect.std.Console
 import cats.effect.tracing.TracingConstants._
 
 import scala.concurrent.CancellationException
@@ -127,6 +128,12 @@ import scala.util.Try
  * number of compute worker threads to "make room" for the I/O workers, such that they all sum
  * to the number of physical threads exposed by the kernel.
  *
+ * @note
+ *   While [[IOApp]] works perfectly fine for browser applications, in practice it brings little
+ *   value over calling [[IO.unsafeRunAndForget]]. You can use your UI framework's preferred API
+ *   for defining your application's entrypoint. On the other hand, Node.js applications must
+ *   use [[IOApp]] to behave correctly.
+ *
  * @see
  *   [[IO]]
  * @see
@@ -162,6 +169,23 @@ trait IOApp {
   protected def runtimeConfig: unsafe.IORuntimeConfig = unsafe.IORuntimeConfig()
 
   /**
+   * Configures the action to perform when unhandled errors are caught by the runtime. By
+   * default, this simply delegates to [[cats.effect.std.Console!.printStackTrace]]. It is safe
+   * to perform any `IO` action within this handler; it will not block the progress of the
+   * runtime. With that said, some care should be taken to avoid raising unhandled errors as a
+   * result of handling unhandled errors, since that will result in the obvious chaos.
+   */
+  protected def reportFailure(err: Throwable): IO[Unit] =
+    Console[IO].printStackTrace(err)
+
+  /**
+   * Defines what to do when CpuStarvationCheck is triggered. Defaults to log a warning to
+   * System.err.
+   */
+  protected def onCpuStarvationWarn(metrics: CpuStarvationWarningMetrics): IO[Unit] =
+    CpuStarvationCheck.logWarning(metrics)
+
+  /**
    * The entry point for your application. Will be called by the runtime when the process is
    * started. If the underlying runtime supports it, any arguments passed to the process will be
    * made available in the `args` parameter. The numeric value within the resulting [[ExitCode]]
@@ -182,11 +206,14 @@ trait IOApp {
       import unsafe.IORuntime
 
       val installed = IORuntime installGlobal {
+        val compute = IORuntime.createBatchingMacrotaskExecutor(reportFailure = t =>
+          reportFailure(t).unsafeRunAndForgetWithoutCallback()(runtime))
+
         IORuntime(
-          IORuntime.defaultComputeExecutionContext,
-          IORuntime.defaultComputeExecutionContext,
+          compute,
+          compute,
           IORuntime.defaultScheduler,
-          () => (),
+          () => IORuntime.resetGlobal(),
           runtimeConfig)
       }
 
@@ -233,7 +260,7 @@ trait IOApp {
     val fiber = Spawn[IO]
       .raceOutcome[ExitCode, Nothing](
         CpuStarvationCheck
-          .run(runtimeConfig, JsCpuStarvationMetrics())
+          .run(runtimeConfig, JsCpuStarvationMetrics(), onCpuStarvationWarn)
           .background
           .surround(run(argList)),
         keepAlive)

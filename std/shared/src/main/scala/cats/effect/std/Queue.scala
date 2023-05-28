@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2023 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ import scala.annotation.tailrec
 import scala.collection.immutable.{Queue => ScalaQueue}
 import scala.collection.mutable.ListBuffer
 
-import java.util.concurrent.atomic.{AtomicLong, AtomicLongArray, AtomicReference}
+import java.util.concurrent.atomic.{AtomicLong, AtomicLongArray}
 
 /**
  * A purely functional, concurrent data structure which allows insertion and retrieval of
@@ -187,85 +187,136 @@ object Queue {
       extends Queue[F, A] {
 
     def offer(a: A): F[Unit] =
-      F.deferred[Deferred[F, A]] flatMap { latch =>
+      F.deferred[Boolean] flatMap { latch =>
         F uncancelable { poll =>
-          val cleanupF = stateR modify {
-            case SyncState(offerers, takers) =>
-              val fallback = latch.tryGet flatMap {
-                case Some(offerer) => offerer.complete(a).void
-                case None => F.unit
-              }
-
-              SyncState(offerers.filter(_ ne latch), takers) -> fallback
-          }
+          // this is the 2-phase commit
+          // we don't need an onCancel for latch.get since if *we* are canceled, it's okay to drop the value
+          val checkCommit = poll(latch.get).ifM(F.unit, poll(offer(a)))
 
           val modificationF = stateR modify {
             case SyncState(offerers, takers) if takers.nonEmpty =>
               val (taker, tail) = takers.dequeue
-              SyncState(offerers, tail) -> taker.complete(a).void
+
+              val finish = taker.complete((a, latch)) *> checkCommit
+              SyncState(offerers, tail) -> finish
 
             case SyncState(offerers, takers) =>
-              SyncState(offerers.enqueue(latch), takers) ->
-                poll(latch.get).onCancel(cleanupF.flatten).flatMap(_.complete(a).void)
+              val cleanupF = stateR update {
+                case SyncState(offerers, takers) =>
+                  SyncState(offerers.filter(_._2 ne latch), takers)
+              }
+
+              // if we're canceled here, make sure we clean up
+              SyncState(offerers.enqueue((a, latch)), takers) -> checkCommit.onCancel(cleanupF)
           }
 
           modificationF.flatten
         }
       }
 
-    def tryOffer(a: A): F[Boolean] = {
-      val modificationF = stateR modify {
+    def tryOffer(a: A): F[Boolean] =
+      stateR.flatModify {
         case SyncState(offerers, takers) if takers.nonEmpty =>
           val (taker, tail) = takers.dequeue
-          SyncState(offerers, tail) -> taker.complete(a).as(true)
+
+          val commitF = F.deferred[Boolean] flatMap { latch =>
+            F uncancelable { poll =>
+              // this won't block for long since we complete quickly in this handoff
+              taker.complete((a, latch)) *> poll(latch.get)
+            }
+          }
+
+          SyncState(offerers, tail) -> commitF
 
         case st =>
           st -> F.pure(false)
       }
 
-      modificationF.flatten.uncancelable
-    }
-
     val take: F[A] =
-      F.deferred[A] flatMap { latch =>
-        val modificationF = stateR modify {
+      F.deferred[(A, Deferred[F, Boolean])] flatMap { latch =>
+        F uncancelable { poll =>
+          val modificationF = stateR modify {
+            case SyncState(offerers, takers) if offerers.nonEmpty =>
+              val ((value, offerer), tail) = offerers.dequeue
+              SyncState(tail, takers) -> offerer.complete(true).as(value) // can't be canceled
+
+            case SyncState(offerers, takers) =>
+              val cleanupF = {
+                val removeListener = stateR modify {
+                  case SyncState(offerers, takers) =>
+                    // like filter, but also returns a Boolean indicating whether it was found
+                    @tailrec
+                    def filterFound[Z <: AnyRef](
+                        in: ScalaQueue[Z],
+                        out: ScalaQueue[Z]): (Boolean, ScalaQueue[Z]) = {
+
+                      if (in.isEmpty) {
+                        (false, out)
+                      } else {
+                        val (head, tail) = in.dequeue
+
+                        if (head eq latch)
+                          (true, out ++ tail)
+                        else
+                          filterFound(tail, out.enqueue(head))
+                      }
+                    }
+
+                    val (found, takers2) = filterFound(takers, ScalaQueue())
+                    SyncState(offerers, takers2) -> found
+                }
+
+                val failCommit = latch.get flatMap {
+                  // this is where we *fail* the 2-phase commit up in offer
+                  case (_, commitLatch) => commitLatch.complete(false).void
+                }
+
+                // if we *don't* find our latch, it means an offerer has it
+                // we need to wait to handshake with them
+                removeListener.ifM(F.unit, failCommit)
+              }
+
+              val awaitF = poll(latch.get).onCancel(cleanupF) flatMap {
+                case (a, latch) => latch.complete(true).as(a)
+              }
+
+              SyncState(offerers, takers.enqueue(latch)) -> awaitF
+          }
+
+          modificationF.flatten
+        }
+      }
+
+    val tryTake: F[Option[A]] =
+      F uncancelable { _ =>
+        stateR.flatModify {
           case SyncState(offerers, takers) if offerers.nonEmpty =>
-            val (offerer, tail) = offerers.dequeue
-            SyncState(tail, takers) -> offerer.complete(latch).void
+            val ((value, offerer), tail) = offerers.dequeue
+            SyncState(tail, takers) -> offerer.complete(true).as(value.some)
 
-          case SyncState(offerers, takers) =>
-            SyncState(offerers, takers.enqueue(latch)) -> F.unit
+          case st =>
+            st -> none[A].pure[F]
         }
-
-        val cleanupF = stateR update {
-          case SyncState(offerers, takers) =>
-            SyncState(offerers, takers.filter(_ ne latch))
-        }
-
-        F uncancelable { poll => modificationF.flatten *> poll(latch.get).onCancel(cleanupF) }
       }
-
-    val tryTake: F[Option[A]] = {
-      val modificationF = stateR modify {
-        case SyncState(offerers, takers) if offerers.nonEmpty =>
-          val (offerer, tail) = offerers.dequeue
-          SyncState(tail, takers) -> F
-            .deferred[A]
-            .flatMap(d => offerer.complete(d) *> d.get.map(_.some))
-
-        case st =>
-          st -> none[A].pure[F]
-      }
-
-      modificationF.flatten.uncancelable
-    }
 
     val size: F[Int] = F.pure(0)
   }
 
+  /*
+   * From first principles, some of the asymmetry here is justified by the fact that the offerer
+   * already has a value, so if the offerer is canceled, it's not at all unusual for that value to
+   * be "lost". The taker starts out *without* a value, so it's the taker-cancelation situation
+   * where we must take extra care to ensure atomicity.
+   *
+   * The booleans here indicate whether the taker was canceled after acquiring the value. This
+   * allows the taker to signal back to the offerer whether it should retry (because the taker was
+   * canceled), while the offerer is careful to block until that signal is received. The tradeoff
+   * here (aside from added complexity) is that operations like tryOffer now can block for a short
+   * time, and tryTake becomes uncancelable.
+   */
   private final case class SyncState[F[_], A](
-      offerers: ScalaQueue[Deferred[F, Deferred[F, A]]],
-      takers: ScalaQueue[Deferred[F, A]])
+      offerers: ScalaQueue[(A, Deferred[F, Boolean])],
+      takers: ScalaQueue[Deferred[F, (A, Deferred[F, Boolean])]])
 
   private object SyncState {
     def empty[F[_], A]: SyncState[F, A] = SyncState(ScalaQueue(), ScalaQueue())
@@ -306,20 +357,17 @@ object Queue {
       }
 
     def tryOffer(a: A): F[Boolean] =
-      state
-        .modify {
-          case State(queue, size, takers, offerers) if takers.nonEmpty =>
-            val (taker, rest) = takers.dequeue
-            State(queue.enqueue(a), size + 1, rest, offerers) -> taker.complete(()).as(true)
+      state.flatModify {
+        case State(queue, size, takers, offerers) if takers.nonEmpty =>
+          val (taker, rest) = takers.dequeue
+          State(queue.enqueue(a), size + 1, rest, offerers) -> taker.complete(()).as(true)
 
-          case State(queue, size, takers, offerers) if size < capacity =>
-            State(queue.enqueue(a), size + 1, takers, offerers) -> F.pure(true)
+        case State(queue, size, takers, offerers) if size < capacity =>
+          State(queue.enqueue(a), size + 1, takers, offerers) -> F.pure(true)
 
-          case s =>
-            onTryOfferNoCapacity(s, a)
-        }
-        .flatten
-        .uncancelable
+        case s =>
+          onTryOfferNoCapacity(s, a)
+      }
 
     val take: F[A] =
       F.uncancelable { poll =>
@@ -377,22 +425,19 @@ object Queue {
       }
 
     val tryTake: F[Option[A]] =
-      state
-        .modify {
-          case State(queue, size, takers, offerers) if queue.nonEmpty && offerers.isEmpty =>
-            val (a, rest) = queue.dequeue
-            State(rest, size - 1, takers, offerers) -> F.pure(a.some)
+      state.flatModify {
+        case State(queue, size, takers, offerers) if queue.nonEmpty && offerers.isEmpty =>
+          val (a, rest) = queue.dequeue
+          State(rest, size - 1, takers, offerers) -> F.pure(a.some)
 
-          case State(queue, size, takers, offerers) if queue.nonEmpty =>
-            val (a, rest) = queue.dequeue
-            val (release, tail) = offerers.dequeue
-            State(rest, size - 1, takers, tail) -> release.complete(()).as(a.some)
+        case State(queue, size, takers, offerers) if queue.nonEmpty =>
+          val (a, rest) = queue.dequeue
+          val (release, tail) = offerers.dequeue
+          State(rest, size - 1, takers, tail) -> release.complete(()).as(a.some)
 
-          case s =>
-            s -> F.pure(none[A])
-        }
-        .flatten
-        .uncancelable
+        case s =>
+          s -> F.pure(none[A])
+      }
 
     val size: F[Int] = state.get.map(_.size)
 
@@ -492,8 +537,6 @@ object Queue {
   }
 
   private val EitherUnit: Either[Nothing, Unit] = Right(())
-  private val FailureSignal: Throwable = new RuntimeException
-    with scala.util.control.NoStackTrace
 
   /*
    * Does not correctly handle bound = 0 because take waiters are async[Unit]
@@ -506,6 +549,8 @@ object Queue {
 
     private[this] val takers = new UnsafeUnbounded[Either[Throwable, Unit] => Unit]()
     private[this] val offerers = new UnsafeUnbounded[Either[Throwable, Unit] => Unit]()
+
+    private[this] val FailureSignal = cats.effect.std.FailureSignal // prefetch
 
     // private[this] val takers = new ConcurrentLinkedQueue[AtomicReference[Either[Throwable, Unit] => Unit]]()
     // private[this] val offerers = new ConcurrentLinkedQueue[AtomicReference[Either[Throwable, Unit] => Unit]]()
@@ -760,6 +805,7 @@ object Queue {
   private final class UnboundedAsyncQueue[F[_], A]()(implicit F: Async[F]) extends Queue[F, A] {
     private[this] val buffer = new UnsafeUnbounded[A]()
     private[this] val takers = new UnsafeUnbounded[Either[Throwable, Unit] => Unit]()
+    private[this] val FailureSignal = cats.effect.std.FailureSignal // prefetch
 
     def offer(a: A): F[Unit] = F delay {
       buffer.put(a)
@@ -875,6 +921,8 @@ object Queue {
     private[this] val tail = new AtomicLong(0)
 
     private[this] val LookAheadStep = Math.max(2, Math.min(bound / 4, 4096)) // TODO tunable
+
+    private[this] val FailureSignal = cats.effect.std.FailureSignal // prefetch
 
     0.until(bound).foreach(i => sequenceBuffer.set(i, i.toLong))
 
@@ -1037,97 +1085,6 @@ object Queue {
 
     private[this] def project(idx: Long): Int =
       ((idx & Int.MaxValue) % bound).toInt
-  }
-
-  final class UnsafeUnbounded[A] {
-    private[this] val first = new AtomicReference[Cell]
-    private[this] val last = new AtomicReference[Cell]
-
-    def size(): Int = {
-      var current = first.get()
-      var count = 0
-      while (current != null) {
-        count += 1
-        current = current.get()
-      }
-      count
-    }
-
-    def put(data: A): () => Unit = {
-      val cell = new Cell(data)
-
-      val prevLast = last.getAndSet(cell)
-
-      if (prevLast eq null)
-        first.set(cell)
-      else
-        prevLast.set(cell)
-
-      cell
-    }
-
-    @tailrec
-    def take(): A = {
-      val taken = first.get()
-      if (taken ne null) {
-        val next = taken.get()
-        if (first.compareAndSet(taken, next)) { // WINNING
-          if ((next eq null) && !last.compareAndSet(taken, null)) {
-            // we emptied the first, but someone put at the same time
-            // in this case, they might have seen taken in the last slot
-            // at which point they would *not* fix up the first pointer
-            // instead of fixing first, they would have written into taken
-            // so we fix first for them. but we might be ahead, so we loop
-            // on taken.get() to wait for them to make it not-null
-
-            var next2 = taken.get()
-            while (next2 eq null) {
-              next2 = taken.get()
-            }
-
-            first.set(next2)
-          }
-
-          val ret = taken.data()
-          taken() // Attempt to clear out data we've consumed
-          ret
-        } else {
-          take() // We lost, try again
-        }
-      } else {
-        if (last.get() ne null) {
-          take() // Waiting for prevLast.set(cell), so recurse
-        } else {
-          throw FailureSignal
-        }
-      }
-    }
-
-    def debug(): String = {
-      val f = first.get()
-
-      if (f == null) {
-        "[]"
-      } else {
-        f.debug()
-      }
-    }
-
-    private final class Cell(private[this] final var _data: A)
-        extends AtomicReference[Cell]
-        with (() => Unit) {
-
-      def data(): A = _data
-
-      final override def apply(): Unit = {
-        _data = null.asInstanceOf[A] // You want a lazySet here
-      }
-
-      def debug(): String = {
-        val tail = get()
-        s"${_data} -> ${if (tail == null) "[]" else tail.debug()}"
-      }
-    }
   }
 
   implicit def catsInvariantForQueue[F[_]: Functor]: Invariant[Queue[F, *]] =

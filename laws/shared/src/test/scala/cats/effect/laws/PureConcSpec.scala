@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2023 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -46,6 +46,13 @@ class PureConcSpec extends Specification with Discipline with BaseSpec {
     "short-circuit on error" in {
       pure.run((F.never[Unit], F.raiseError[Unit](42)).parTupled) mustEqual Outcome.Errored(42)
       pure.run((F.raiseError[Unit](42), F.never[Unit]).parTupled) mustEqual Outcome.Errored(42)
+    }
+
+    "short-circuit on canceled" in {
+      pure.run((F.never[Unit], F.canceled).parTupled.start.flatMap(_.join)) mustEqual Outcome
+        .Succeeded(Some(Outcome.canceled[F, Nothing, Unit]))
+      pure.run((F.canceled, F.never[Unit]).parTupled.start.flatMap(_.join)) mustEqual Outcome
+        .Succeeded(Some(Outcome.canceled[F, Nothing, Unit]))
     }
 
     "not run forever on chained product" in {

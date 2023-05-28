@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2023 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -36,5 +36,6 @@ trait DetectPlatform {
   }
 
   def isJS: Boolean = true
+  def isJVM: Boolean = false
   def isNative: Boolean = false
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2023 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 package cats.effect
 
-import cats.effect.metrics.NativeCpuStarvationMetrics
+import cats.effect.metrics.{CpuStarvationWarningMetrics, NativeCpuStarvationMetrics}
 
 import scala.concurrent.CancellationException
 import scala.concurrent.duration._
@@ -166,6 +166,13 @@ trait IOApp {
   protected def runtimeConfig: unsafe.IORuntimeConfig = unsafe.IORuntimeConfig()
 
   /**
+   * Defines what to do when CpuStarvationCheck is triggered. Defaults to log a warning to
+   * System.err.
+   */
+  protected def onCpuStarvationWarn(metrics: CpuStarvationWarningMetrics): IO[Unit] =
+    CpuStarvationCheck.logWarning(metrics)
+
+  /**
    * The entry point for your application. Will be called by the runtime when the process is
    * started. If the underlying runtime supports it, any arguments passed to the process will be
    * made available in the `args` parameter. The numeric value within the resulting [[ExitCode]]
@@ -190,8 +197,9 @@ trait IOApp {
           IORuntime.defaultComputeExecutionContext,
           IORuntime.defaultComputeExecutionContext,
           IORuntime.defaultScheduler,
-          () => (),
-          runtimeConfig)
+          () => IORuntime.resetGlobal(),
+          runtimeConfig
+        )
       }
 
       _runtime = IORuntime.global
@@ -220,7 +228,7 @@ trait IOApp {
     Spawn[IO]
       .raceOutcome[ExitCode, Nothing](
         CpuStarvationCheck
-          .run(runtimeConfig, NativeCpuStarvationMetrics())
+          .run(runtimeConfig, NativeCpuStarvationMetrics(), onCpuStarvationWarn)
           .background
           .surround(run(args.toList)),
         keepAlive)

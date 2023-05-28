@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2023 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 package cats.effect.std
 
-import cats.effect.kernel.{Async, Outcome, Ref, Resource}
+import cats.effect.kernel.{Async, Outcome, Resource}
 import cats.syntax.all._
 
 import scala.annotation.tailrec
@@ -69,8 +69,10 @@ trait Dispatcher[F[_]] extends DispatcherPlatform[F] {
    * Submits an effect to be executed with fire-and-forget semantics.
    */
   def unsafeRunAndForget[A](fa: F[A]): Unit = {
-    unsafeToFutureCancelable(fa)
-    ()
+    unsafeRunAsync(fa) {
+      case Left(t) => t.printStackTrace()
+      case Right(_) => ()
+    }
   }
 
   // package-private because it's just an internal utility which supports specific implementations
@@ -240,21 +242,14 @@ object Dispatcher {
         states
       })
       ec <- Resource.eval(F.executionContext)
-      alive <- Resource.make(F.delay(new AtomicBoolean(true)))(ref => F.delay(ref.set(false)))
 
       // supervisor for the main loop, which needs to always restart unless the Supervisor itself is canceled
       // critically, inner actions can be canceled without impacting the loop itself
       supervisor <- Supervisor[F](await, Some((_: Outcome[F, Throwable, _]) => true))
 
       _ <- {
-        def dispatcher(
-            doneR: Ref[F, Boolean],
-            latch: AtomicReference[() => Unit],
-            state: Array[AtomicReference[List[Registration]]]): F[Unit] = {
-
-          val step = for {
-            _ <- F.delay(latch.set(Noop)) // reset latch
-
+        def step(state: Array[AtomicReference[List[Registration]]], await: F[Unit]): F[Unit] =
+          for {
             regs <- F delay {
               val buffer = mutable.ListBuffer.empty[Registration]
               var i = 0
@@ -271,12 +266,7 @@ object Dispatcher {
 
             _ <-
               if (regs.isEmpty) {
-                F.async_[Unit] { cb =>
-                  if (!latch.compareAndSet(Noop, () => cb(Completed))) {
-                    // state was changed between when we last set the latch and now; complete the callback immediately
-                    cb(Completed)
-                  }
-                }
+                await
               } else {
                 regs traverse_ {
                   case r @ Registration(action, prepareCancel) =>
@@ -289,28 +279,55 @@ object Dispatcher {
               }
           } yield ()
 
-          // if we're marked as done, yield immediately to give other fibers a chance to shut us down
-          // we might loop on this a few times since we're marked as done before the supervisor is canceled
-          doneR.get.ifM(F.cede, step)
+        def dispatcher(
+            doneR: AtomicBoolean,
+            latch: AtomicReference[() => Unit],
+            state: Array[AtomicReference[List[Registration]]]): F[Unit] = {
+
+          val await =
+            F.async_[Unit] { cb =>
+              if (!latch.compareAndSet(Noop, () => cb(Completed))) {
+                // state was changed between when we last set the latch and now; complete the callback immediately
+                cb(Completed)
+              }
+            }
+
+          F.delay(latch.set(Noop)) *> // reset latch
+            // if we're marked as done, yield immediately to give other fibers a chance to shut us down
+            // we might loop on this a few times since we're marked as done before the supervisor is canceled
+            F.delay(doneR.get()).ifM(F.cede, step(state, await))
         }
 
         0.until(workers).toList traverse_ { n =>
-          Resource.eval(F.ref(false)) flatMap { doneR =>
+          Resource.eval(F.delay(new AtomicBoolean(false))) flatMap { doneR =>
             val latch = latches(n)
             val worker = dispatcher(doneR, latch, states(n))
             val release = F.delay(latch.getAndSet(Open)())
-            Resource.make(supervisor.supervise(worker))(_ => doneR.set(true) >> release)
+            Resource.make(supervisor.supervise(worker)) { _ =>
+              F.delay(doneR.set(true)) *> step(states(n), F.unit) *> release
+            }
           }
         }
       }
+
+      // Alive is the innermost resource so that when releasing
+      // the very first thing we do is set dispatcher to un-alive
+      alive <- Resource.make(F.delay(new AtomicBoolean(true)))(ref => F.delay(ref.set(false)))
     } yield {
       new Dispatcher[F] {
+        override def unsafeRunAndForget[A](fa: F[A]): Unit = {
+          unsafeRunAsync(fa) {
+            case Left(t) => ec.reportFailure(t)
+            case Right(_) => ()
+          }
+        }
+
         def unsafeToFutureCancelable[E](fe: F[E]): (Future[E], () => Future[Unit]) = {
           val promise = Promise[E]()
 
           val action = fe
             .flatMap(e => F.delay(promise.success(e)))
-            .onError { case t => F.delay(promise.failure(t)) }
+            .handleErrorWith(t => F.delay(promise.failure(t)))
             .void
 
           val cancelState = new AtomicReference[CancelState](CancelInit)

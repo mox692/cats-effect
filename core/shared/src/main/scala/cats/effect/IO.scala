@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2023 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -38,7 +38,7 @@ import cats.data.Ior
 import cats.effect.instances.spawn
 import cats.effect.kernel.CancelScope
 import cats.effect.kernel.GenTemporal.handleDuration
-import cats.effect.std.{Console, Env, UUIDGen}
+import cats.effect.std.{Backpressure, Console, Env, Supervisor, UUIDGen}
 import cats.effect.tracing.{Tracing, TracingEvent}
 import cats.syntax.all._
 
@@ -363,6 +363,51 @@ sealed abstract class IO[+A] private () extends IOPlatform[A] {
   def backgroundOn(ec: ExecutionContext): ResourceIO[IO[OutcomeIO[A @uncheckedVariance]]] =
     Resource.make(startOn(ec))(_.cancel).map(_.join)
 
+  /**
+   * Given an effect which might be [[uncancelable]] and a finalizer, produce an effect which
+   * can be canceled by running the finalizer. This combinator is useful for handling scenarios
+   * in which an effect is inherently uncancelable but may be canceled through setting some
+   * external state. A trivial example of this might be the following:
+   *
+   * {{{
+   *   val flag = new AtomicBoolean(false)
+   *   val ioa = IO blocking {
+   *     while (!flag.get()) {
+   *       Thread.sleep(10)
+   *     }
+   *   }
+   *
+   *   ioa.cancelable(IO.delay(flag.set(true)))
+   * }}}
+   *
+   * Without `cancelable`, effects constructed by `blocking`, `delay`, and similar are
+   * inherently uncancelable. Simply adding an `onCancel` to such effects is insufficient to
+   * resolve this, despite the fact that under *some* circumstances (such as the above), it is
+   * possible to enrich an otherwise-uncancelable effect with early termination. `cancelable`
+   * addresses this use-case.
+   *
+   * Note that there is no free lunch here. If an effect truly cannot be prematurely terminated,
+   * `cancelable` will not allow for cancelation. As an example, if you attempt to cancel
+   * `uncancelable(_ => never)`, the cancelation will hang forever (in other words, it will be
+   * itself equivalent to `never`). Applying `cancelable` will not change this in any way. Thus,
+   * attempting to cancel `cancelable(uncancelable(_ => never), unit)` will ''also'' hang
+   * forever. As in all cases, cancelation will only return when all finalizers have run and the
+   * fiber has fully terminated.
+   *
+   * If the `IO` self-cancels and the `cancelable` itself is uncancelable, the resulting fiber
+   * will be equal to `never` (similar to [[race]]). Under normal circumstances, if `IO`
+   * self-cancels, that cancelation will be propagated to the calling context.
+   *
+   * @param fin
+   *   an effect which orchestrates some external state which terminates the `IO`
+   * @see
+   *   [[uncancelable]]
+   * @see
+   *   [[onCancel]]
+   */
+  def cancelable(fin: IO[Unit]): IO[A] =
+    Spawn[IO].cancelable(this, fin)
+
   def forceR[B](that: IO[B]): IO[B] =
     // cast is needed here to trick the compiler into avoiding the IO[Any]
     asInstanceOf[IO[Unit]].handleError(_ => ()).productR(that)
@@ -497,22 +542,26 @@ sealed abstract class IO[+A] private () extends IOPlatform[A] {
    */
   def map[B](f: A => B): IO[B] = IO.Map(this, f, Tracing.calculateTracingEvent(f))
 
+  /**
+   * Applies rate limiting to this `IO` based on provided backpressure semantics.
+   *
+   * @return
+   *   an Option which denotes if this `IO` was run or not according to backpressure semantics
+   */
+  def metered(backpressure: Backpressure[IO]): IO[Option[A]] =
+    backpressure.metered(this)
+
   def onCancel(fin: IO[Unit]): IO[A] =
     IO.OnCancel(this, fin)
 
   def onError(f: Throwable => IO[Unit]): IO[A] =
-    handleErrorWith(t => f(t).attempt *> IO.raiseError(t))
+    handleErrorWith(t => f(t).voidError *> IO.raiseError(t))
 
   def race[B](that: IO[B]): IO[Either[A, B]] =
     IO.race(this, that)
 
   def raceOutcome[B](that: IO[B]): IO[Either[OutcomeIO[A @uncheckedVariance], OutcomeIO[B]]] =
-    IO.uncancelable { _ =>
-      racePair(that).flatMap {
-        case Left((oc, f)) => f.cancel.as(Left(oc))
-        case Right((f, oc)) => f.cancel.as(Right(oc))
-      }
-    }
+    IO.asyncForIO.raceOutcome(this, that)
 
   def racePair[B](that: IO[B]): IO[Either[
     (OutcomeIO[A @uncheckedVariance], FiberIO[B]),
@@ -609,6 +658,15 @@ sealed abstract class IO[+A] private () extends IOPlatform[A] {
       IO.unit
     else
       flatMap(_ => replicateA_(n - 1))
+
+  /**
+   * Starts this `IO` on the supervisor.
+   *
+   * @return
+   *   a [[cats.effect.kernel.Fiber]] that represents a handle to the started fiber.
+   */
+  def supervise(supervisor: Supervisor[IO]): IO[Fiber[IO, Throwable, A @uncheckedVariance]] =
+    supervisor.supervise(this)
 
   /**
    * Logs the value of this `IO` _(even if it is an error or if it was cancelled)_ to the
@@ -735,6 +793,11 @@ sealed abstract class IO[+A] private () extends IOPlatform[A] {
   def timed: IO[(FiniteDuration, A)] =
     Clock[IO].timed(this)
 
+  /**
+   * Lifts this `IO` into a resource. The resource has a no-op release.
+   */
+  def toResource: Resource[IO, A] = Resource.eval(this)
+
   def product[B](that: IO[B]): IO[(A, B)] =
     flatMap(a => that.map(b => (a, b)))
 
@@ -802,6 +865,11 @@ sealed abstract class IO[+A] private () extends IOPlatform[A] {
   def void: IO[Unit] =
     map(_ => ())
 
+  def voidError(implicit ev: A <:< Unit): IO[Unit] = {
+    val _ = ev
+    asInstanceOf[IO[Unit]].handleError(_ => ())
+  }
+
   /**
    * Converts the source `IO` into any `F` type that implements the [[LiftIO]] type class.
    */
@@ -865,7 +933,15 @@ sealed abstract class IO[+A] private () extends IOPlatform[A] {
    * should never be totally silent.
    */
   def unsafeRunAndForget()(implicit runtime: unsafe.IORuntime): Unit = {
-    val _ = unsafeRunFiber((), _ => (), _ => ())
+    val _ = unsafeRunFiber(
+      (),
+      t => {
+        if (NonFatal(t)) {
+          if (runtime.config.reportUnhandledFiberErrors)
+            runtime.compute.reportFailure(t)
+        } else { t.printStackTrace() }
+      },
+      _ => ())
     ()
   }
 
@@ -1073,9 +1149,80 @@ object IO extends IOCompanionPlatform with IOLowPriorityImplicits {
     delay(thunk).flatten
 
   /**
+   * Suspends an asynchronous side effect with optional immediate result in `IO`.
+   *
+   * The given function `k` will be invoked during evaluation of the `IO` to:
+   *   - check if result is already available;
+   *   - "schedule" the asynchronous callback, where the callback of type `Either[Throwable, A]
+   *     \=> Unit` is the parameter passed to that function. Only the ''first'' invocation of
+   *     the callback will be effective! All subsequent invocations will be silently dropped.
+   *
+   * The process of registering the callback itself is suspended in `IO` (the outer `IO` of
+   * `IO[Either[Option[IO[Unit]], A]]`).
+   *
+   * The effect returns `Either[Option[IO[Unit]], A]` where:
+   *   - right side `A` is an immediate result of computation (callback invocation will be
+   *     dropped);
+   *   - left side `Option[IO[Unit]] `is an optional finalizer to be run in the event that the
+   *     fiber running `asyncCheckAttempt(k)` is canceled.
+   *
+   * For example, here is a simplified version of `IO.fromCompletableFuture`:
+   *
+   * {{{
+   * def fromCompletableFuture[A](fut: IO[CompletableFuture[A]]): IO[A] = {
+   *   fut.flatMap { cf =>
+   *     IO.asyncCheckAttempt { cb =>
+   *       if (cf.isDone) {
+   *         //Register immediately available result of the completable future or handle an error
+   *         IO(cf.get)
+   *           .map(Right(_))
+   *           .handleError { e =>
+   *             cb(Left(e))
+   *             Left(None)
+   *           }
+   *       } else {
+   *         IO {
+   *           //Invoke the callback with the result of the completable future
+   *           val stage = cf.handle[Unit] {
+   *             case (a, null) => cb(Right(a))
+   *             case (_, e) => cb(Left(e))
+   *           }
+   *
+   *           //Cancel the completable future if the fiber is canceled
+   *           Left(Some(IO(stage.cancel(false)).void))
+   *         }
+   *       }
+   *     }
+   *   }
+   * }
+   * }}}
+   *
+   * Note that `asyncCheckAttempt` is uncancelable during its registration.
+   *
+   * @see
+   *   [[async]] for a simplified variant without an option for immediate result
+   */
+  def asyncCheckAttempt[A](
+      k: (Either[Throwable, A] => Unit) => IO[Either[Option[IO[Unit]], A]]): IO[A] = {
+    val body = new Cont[IO, A, A] {
+      def apply[G[_]](implicit G: MonadCancel[G, Throwable]) = { (resume, get, lift) =>
+        G.uncancelable { poll =>
+          lift(k(resume)) flatMap {
+            case Right(a) => G.pure(a)
+            case Left(Some(fin)) => G.onCancel(poll(get), lift(fin))
+            case Left(None) => poll(get)
+          }
+        }
+      }
+    }
+
+    IOCont(body, Tracing.calculateTracingEvent(k))
+  }
+
+  /**
    * Suspends an asynchronous side effect in `IO`.
    *
-   * The given function will be invoked during evaluation of the `IO` to "schedule" the
+   * The given function `k` will be invoked during evaluation of the `IO` to "schedule" the
    * asynchronous callback, where the callback of type `Either[Throwable, A] => Unit` is the
    * parameter passed to that function. Only the ''first'' invocation of the callback will be
    * effective! All subsequent invocations will be silently dropped.
@@ -1107,12 +1254,17 @@ object IO extends IOCompanionPlatform with IOLowPriorityImplicits {
    * }
    * }}}
    *
+   * Note that `async` is uncancelable during its registration.
+   *
    * @see
    *   [[async_]] for a simplified variant without a finalizer
+   * @see
+   *   [[asyncCheckAttempt]] for more generic version providing an optional immediate result of
+   *   computation
    */
   def async[A](k: (Either[Throwable, A] => Unit) => IO[Option[IO[Unit]]]): IO[A] = {
     val body = new Cont[IO, A, A] {
-      // MEMO: 
+      // MEMO:
       // k: 非同期に行いたい処理. 別fiberで実行される可能性あり.結果をresume(Either[Throwable, Any] => Unit)に渡すことになる
       // resume: このfiberがkの後に行う処理(≒cbの引数が渡される処理.)
       // get: stateを保持しているshared object的なもの. 次のContGetのIOに渡すイメージ
@@ -1124,8 +1276,7 @@ object IO extends IOCompanionPlatform with IOLowPriorityImplicits {
           lift(k(resume)) flatMap {
             // k -> resume と処理が流れて、resumeが終了するとここにくる
             case Some(fin) => G.onCancel(poll(get), lift(fin))
-            // 次のIOとしてIO[ContState] (= IOCont.Get) を返す.
-            case None => poll(get)
+            case None => get
           }
         }
       }
@@ -1137,7 +1288,7 @@ object IO extends IOCompanionPlatform with IOLowPriorityImplicits {
   /**
    * Suspends an asynchronous side effect in `IO`.
    *
-   * The given function will be invoked during evaluation of the `IO` to "schedule" the
+   * The given function `k` will be invoked during evaluation of the `IO` to "schedule" the
    * asynchronous callback, where the callback is the parameter passed to that function. Only
    * the ''first'' invocation of the callback will be effective! All subsequent invocations will
    * be silently dropped.
@@ -1164,13 +1315,18 @@ object IO extends IOCompanionPlatform with IOLowPriorityImplicits {
    * This function can be thought of as a safer, lexically-constrained version of `Promise`,
    * where `IO` is like a safer, lazy version of `Future`.
    *
+   * Also, note that `async` is uncancelable during its registration.
+   *
    * @see
-   *   [[async]]
+   *   [[async]] for more generic version providing a finalizer
+   * @see
+   *   [[asyncCheckAttempt]] for more generic version providing an optional immediate result of
+   *   computation and a finalizer
    */
   def async_[A](k: (Either[Throwable, A] => Unit) => Unit): IO[A] = {
     val body = new Cont[IO, A, A] {
       def apply[G[_]](implicit G: MonadCancel[G, Throwable]) = { (resume, get, lift) =>
-        G.uncancelable { poll => lift(IO.delay(k(resume))).flatMap(_ => poll(get)) }
+        G.uncancelable(_ => lift(IO.delay(k(resume))).flatMap(_ => get))
       }
     }
 
@@ -1390,10 +1546,16 @@ object IO extends IOCompanionPlatform with IOLowPriorityImplicits {
    * }}}
    *
    * @see
-   *   [[IO#unsafeToFuture]]
+   *   [[IO#unsafeToFuture]], [[fromFutureCancelable]]
    */
   def fromFuture[A](fut: IO[Future[A]]): IO[A] =
     asyncForIO.fromFuture(fut)
+
+  /**
+   * Like [[fromFuture]], but is cancelable via the provided finalizer.
+   */
+  def fromFutureCancelable[A](fut: IO[(Future[A], IO[Unit])]): IO[A] =
+    asyncForIO.fromFutureCancelable(fut)
 
   /**
    * Run two IO tasks concurrently, and return the first to finish, either in success or error.
@@ -1618,6 +1780,10 @@ object IO extends IOCompanionPlatform with IOLowPriorityImplicits {
 
   private[this] val _asyncForIO: kernel.Async[IO] = new kernel.Async[IO]
     with StackSafeMonad[IO] {
+
+    override def asyncCheckAttempt[A](
+        k: (Either[Throwable, A] => Unit) => IO[Either[Option[IO[Unit]], A]]): IO[A] =
+      IO.asyncCheckAttempt(k)
 
     override def async[A](k: (Either[Throwable, A] => Unit) => IO[Option[IO[Unit]]]): IO[A] =
       IO.async(k)
@@ -1883,7 +2049,7 @@ object IO extends IOCompanionPlatform with IOLowPriorityImplicits {
     }
   }
 
-  // MEMO: 
+  // MEMO:
   // Low level construction that powers `async`
   private[effect] final case class IOCont[K, R](body: Cont[IO, K, R], event: TracingEvent)
       extends IO[R] {

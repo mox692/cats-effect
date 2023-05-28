@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2023 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,20 +33,37 @@ private[unsafe] abstract class IORuntimeCompanionPlatform { this: IORuntime.type
 
   private[this] final val DefaultBlockerPrefix = "io-compute-blocker"
 
+  @deprecated("Preserved for binary-compatibility", "3.5.0")
+  def createWorkStealingComputeThreadPool(
+      threads: Int,
+      threadPrefix: String,
+      blockerThreadPrefix: String,
+      runtimeBlockingExpiration: Duration,
+      reportFailure: Throwable => Unit
+  ): (WorkStealingThreadPool, () => Unit) = createWorkStealingComputeThreadPool(
+    threads,
+    threadPrefix,
+    blockerThreadPrefix,
+    runtimeBlockingExpiration,
+    reportFailure,
+    false
+  )
+
   // The default compute thread pool on the JVM is now a work stealing thread pool.
   def createWorkStealingComputeThreadPool(
       threads: Int = Math.max(2, Runtime.getRuntime().availableProcessors()),
       threadPrefix: String = "io-compute",
       blockerThreadPrefix: String = DefaultBlockerPrefix,
       runtimeBlockingExpiration: Duration = 60.seconds,
-      reportFailure: Throwable => Unit = _.printStackTrace())
-      : (WorkStealingThreadPool, () => Unit) = {
+      reportFailure: Throwable => Unit = _.printStackTrace(),
+      blockedThreadDetectionEnabled: Boolean = false): (WorkStealingThreadPool, () => Unit) = {
     val threadPool =
       new WorkStealingThreadPool(
         threads,
         threadPrefix,
         blockerThreadPrefix,
         runtimeBlockingExpiration,
+        blockedThreadDetectionEnabled && (threads > 1),
         reportFailure)
 
     val unregisterMBeans =
@@ -162,7 +179,7 @@ private[unsafe] abstract class IORuntimeCompanionPlatform { this: IORuntime.type
     (Scheduler.fromScheduledExecutor(scheduler), { () => scheduler.shutdown() })
   }
 
-  private[this] var _global: IORuntime = null
+  @volatile private[this] var _global: IORuntime = null
 
   // we don't need to synchronize this with IOApp, because we control the main thread
   // so instead we just yolo it since the lazy val already synchronizes its own initialization
@@ -180,13 +197,13 @@ private[unsafe] abstract class IORuntimeCompanionPlatform { this: IORuntime.type
   private[effect] def resetGlobal(): Unit =
     _global = null
 
-  lazy val global: IORuntime = {
+  def global: IORuntime = {
     if (_global == null) {
       installGlobal {
         val (compute, _) = createWorkStealingComputeThreadPool()
         val (blocking, _) = createDefaultBlockingExecutionContext()
-        val (scheduler, _) = createDefaultScheduler()
-        IORuntime(compute, blocking, scheduler, () => (), IORuntimeConfig())
+
+        IORuntime(compute, blocking, compute, () => resetGlobal(), IORuntimeConfig())
       }
     }
 

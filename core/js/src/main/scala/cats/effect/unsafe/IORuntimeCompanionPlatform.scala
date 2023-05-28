@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2023 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,20 +16,18 @@
 
 package cats.effect.unsafe
 
-import cats.effect.tracing.TracingConstants
-
-import org.scalajs.macrotaskexecutor.MacrotaskExecutor
-
 import scala.concurrent.ExecutionContext
-import scala.scalajs.LinkingInfo
 
 private[unsafe] abstract class IORuntimeCompanionPlatform { this: IORuntime.type =>
 
   def defaultComputeExecutionContext: ExecutionContext =
-    if (LinkingInfo.developmentMode && TracingConstants.isStackTracing && FiberMonitor.weakRefsAvailable)
-      new FiberAwareExecutionContext(MacrotaskExecutor)
-    else
-      MacrotaskExecutor
+    createBatchingMacrotaskExecutor()
+
+  def createBatchingMacrotaskExecutor(
+      batchSize: Int = 64,
+      reportFailure: Throwable => Unit = _.printStackTrace()
+  ): ExecutionContext =
+    new BatchingMacrotaskExecutor(batchSize, reportFailure)
 
   def defaultScheduler: Scheduler = Scheduler.createDefaultScheduler()._1
 
@@ -47,14 +45,14 @@ private[unsafe] abstract class IORuntimeCompanionPlatform { this: IORuntime.type
   private[effect] def resetGlobal(): Unit =
     _global = null
 
-  lazy val global: IORuntime = {
+  def global: IORuntime = {
     if (_global == null) {
       installGlobal {
         IORuntime(
           defaultComputeExecutionContext,
           defaultComputeExecutionContext,
           defaultScheduler,
-          () => (),
+          () => resetGlobal(),
           IORuntimeConfig())
       }
     }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2023 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 package cats.effect
 
-import cats.effect.metrics.JvmCpuStarvationMetrics
+import cats.effect.metrics.{CpuStarvationWarningMetrics, JvmCpuStarvationMetrics}
 import cats.effect.std.Console
 import cats.effect.tracing.TracingConstants._
 import cats.syntax.all._
@@ -241,6 +241,23 @@ trait IOApp {
     Console[IO].printStackTrace(err)
 
   /**
+   * Configures whether to enable blocked thread detection. This is relatively expensive so is
+   * off by default and probably not something that you want to permanently enable in
+   * production.
+   *
+   * If enabled, the compute pool will attempt to detect when blocking operations have been
+   * erroneously wrapped in `IO.apply` or `IO.delay` instead of `IO.blocking` or
+   * `IO.interruptible` and will report stacktraces of this to stderr.
+   *
+   * This may be of interest if you've been getting warnings about CPU starvation printed to
+   * stderr. [[https://typelevel.org/cats-effect/docs/core/starvation-and-tuning]]
+   *
+   * Can also be configured by setting the `cats.effect.detectBlockedThreads` system property.
+   */
+  protected def blockedThreadDetectionEnabled: Boolean =
+    java.lang.Boolean.getBoolean("cats.effect.detectBlockedThreads") // defaults to disabled
+
+  /**
    * Controls whether non-daemon threads blocking application exit are logged to stderr when the
    * `IO` produced by `run` has completed. This mechanism works by starting a daemon thread
    * which periodically polls all active threads on the system, checking for any remaining
@@ -292,6 +309,13 @@ trait IOApp {
       .getOrElse(10.seconds)
 
   /**
+   * Defines what to do when CpuStarvationCheck is triggered. Defaults to log a warning to
+   * System.err.
+   */
+  protected def onCpuStarvationWarn(metrics: CpuStarvationWarningMetrics): IO[Unit] =
+    CpuStarvationCheck.logWarning(metrics)
+
+  /**
    * The entry point for your application. Will be called by the runtime when the process is
    * started. If the underlying runtime supports it, any arguments passed to the process will be
    * made available in the `args` parameter. The numeric value within the resulting [[ExitCode]]
@@ -317,30 +341,27 @@ trait IOApp {
 
       val installed = IORuntime installGlobal {
         // MEMO: このclosureの中が (global) runtime を生成しているところ
-        
+
         // MEMO: compute-pool と compute-pool のシャットダウンがtupleで返されている
         val (compute, compDown) =
           IORuntime.createWorkStealingComputeThreadPool(
             threads = computeWorkerThreadCount,
-            reportFailure = t => reportFailure(t).unsafeRunAndForgetWithoutCallback()(runtime))
+            reportFailure = t => reportFailure(t).unsafeRunAndForgetWithoutCallback()(runtime),
+            blockedThreadDetectionEnabled = blockedThreadDetectionEnabled
+          )
 
         // MEMO: blocking-pool と blocking-pool のシャットダウンがtupleで返されている
         val (blocking, blockDown) =
           IORuntime.createDefaultBlockingExecutionContext()
 
-        // MEMO: scheduler と scheduler のシャットダウンがtupleで返されている
-        val (scheduler, schedDown) =
-          // TODO: このコンポーネントが何をしている？？
-          IORuntime.createDefaultScheduler()
-
         IORuntime(
           compute,
           blocking,
-          scheduler,
+          compute,
           { () =>
             compDown()
             blockDown()
-            schedDown()
+            IORuntime.resetGlobal()
           },
           runtimeConfig)
       }
@@ -387,11 +408,13 @@ trait IOApp {
     val queue = this.queue
 
     val fiber =
-      JvmCpuStarvationMetrics() // Resource[IO, CpuStarvationMetrics] 
+      JvmCpuStarvationMetrics() // Resource[IO, CpuStarvationMetrics]
         .flatMap { cpuStarvationMetrics =>
-          CpuStarvationCheck.run(runtimeConfig, cpuStarvationMetrics).background
-        }               // Resource[IO,  IO[Nothing]] 
-        .surround(ioa)  // IO[ExitCode] (JvmCpuStarvationMetricsのresourceの生成を無視して(ただしActionの実行は行う？？)、IO[ExitCode]に処理を継続させる)
+          CpuStarvationCheck
+            .run(runtimeConfig, cpuStarvationMetrics, onCpuStarvationWarn)
+            .background
+        }
+        .surround(ioa)
         .unsafeRunFiber(
           {
             if (counter.decrementAndGet() == 0) {

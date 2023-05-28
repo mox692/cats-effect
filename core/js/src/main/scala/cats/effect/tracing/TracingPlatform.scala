@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2023 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -107,8 +107,9 @@ private[tracing] abstract class TracingPlatform { self: Tracing.type =>
       callSiteFileName: String): Boolean = {
 
     // anonymous lambdas can only be distinguished by Scala source-location, if available
-    def isInternalScalaFile = !callSiteFileName.endsWith(".js") &&
-      isInternalFile(callSiteFileName)
+    def isInternalScalaFile =
+      (callSiteFileName ne null) && !callSiteFileName.endsWith(".js") && isInternalFile(
+        callSiteFileName)
 
     // this is either a lambda or we are in Firefox
     def isInternalJSCode = callSiteClassName == "<jscode>" &&

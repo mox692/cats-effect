@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2023 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -195,12 +195,26 @@ class IOAppSpec extends Specification {
           h.stderr() must not(contain("boom"))
         }
 
+        "reset global runtime on shutdown" in {
+          val h = platform(GlobalShutdown, List.empty)
+          h.awaitStatus() mustEqual 0
+          h.stderr() must not contain
+            "Cats Effect global runtime already initialized; custom configurations will be ignored"
+          h.stderr() must not(contain("boom"))
+        }
+
         "warn on cpu starvation" in {
           val h = platform(CpuStarvation, List.empty)
           h.awaitStatus()
           val err = h.stderr()
           err must not(contain("[WARNING] Failed to register Cats Effect CPU"))
           err must contain("[WARNING] Your app's responsiveness")
+          // we use a regex because time has too many corner cases - a test run at just the wrong
+          // moment on new year's eve, etc
+          err must beMatching(
+            // (?s) allows matching across line breaks
+            """(?s)^\d{4}-[01]\d-[0-3]\dT[012]\d:[0-6]\d:[0-6]\d(?:\.\d{1,3})?Z \[WARNING\] Your app's responsiveness.*"""
+          )
         }
 
         "custom runtime installed as global" in {
@@ -314,6 +328,15 @@ class IOAppSpec extends Specification {
           val h = platform(MainThreadReportFailure, List.empty)
           h.awaitStatus() mustEqual 0
         }
+
+        "warn on blocked threads" in {
+          val h = platform(BlockedThreads, List.empty)
+          h.awaitStatus()
+          val err = h.stderr()
+          err must contain(
+            "[WARNING] A Cats Effect worker thread was detected to be in a blocked state")
+        }
+
       }
     }
     ()

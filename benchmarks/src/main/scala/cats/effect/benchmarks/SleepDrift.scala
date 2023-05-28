@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2023 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,9 @@ import cats.syntax.all._
 import scala.concurrent.duration._
 
 object SleepDrift extends IOApp.Simple {
+
+  override val runtimeConfig =
+    super.runtimeConfig.copy(cpuStarvationCheckInitialDelay = Duration.Inf)
 
   val delayTwoMinutes = {
     def loop(n: Int): IO[Unit] = {

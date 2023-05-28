@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2022 Typelevel
+ * Copyright 2020-2023 Typelevel
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -351,7 +351,7 @@ sealed abstract class Resource[F[_], +A] extends Serializable {
             case Outcome.Errored(ea) =>
               F.raiseError[(Either[A, B], ExitCase => F[Unit])](ea).guarantee(cancelLoser(f))
             case Outcome.Canceled() =>
-              poll(f.join).onCancel(f.cancel).flatMap {
+              f.cancel *> f.join flatMap {
                 case Outcome.Succeeded(fb) =>
                   fb.map { case (b, fin) => (Either.right[A, B](b), fin) }
                 case Outcome.Errored(eb) =>
@@ -374,7 +374,7 @@ sealed abstract class Resource[F[_], +A] extends Serializable {
             case Outcome.Errored(eb) =>
               F.raiseError[(Either[A, B], ExitCase => F[Unit])](eb).guarantee(cancelLoser(f))
             case Outcome.Canceled() =>
-              poll(f.join).onCancel(f.cancel).flatMap {
+              f.cancel *> f.join flatMap {
                 case Outcome.Succeeded(fa) =>
                   fa.map { case (a, fin) => (Either.left[A, B](a), fin) }
                 case Outcome.Errored(ea) =>
@@ -812,8 +812,8 @@ object Resource extends ResourceFOInstances0 with ResourceHOInstances0 with Reso
    * waiting on a lock, but if it does get acquired, release need to be guaranteed.
    *
    * Note that in this case the acquire action should know how to cleanup after itself in case
-   * it gets canceled, since Resource will only guarantee release when acquire succeeds and
-   * fails (and when the actions in `use` or `flatMap` fail, succeed, or get canceled)
+   * it gets canceled, since Resource will only guarantee release when acquire succeeds (and
+   * when the actions in `use` or `flatMap` fail, succeed, or get canceled)
    *
    * TODO make sure this api, which is more general than makeFull, doesn't allow for
    * interruptible releases
@@ -876,16 +876,15 @@ object Resource extends ResourceFOInstances0 with ResourceHOInstances0 with Reso
     applyCase[F, A](acquire.map(a => (a, e => release(a, e))))
 
   /**
-   * Creates a resource from an acquiring effect and a release function that can discriminate
-   * between different [[ExitCase exit cases]].
+   * Creates a resource from a possibly cancelable acquiring effect and a release function.
    *
-   * The acquiring effect takes a `Poll[F]` to allow for interruptible acquires, which is most
+   * The acquiring effect takes a `Poll[F]` to allow for cancelable acquires, which is most
    * often useful when acquiring lock-like structures: it should be possible to interrupt a
    * fiber waiting on a lock, but if it does get acquired, release need to be guaranteed.
    *
    * Note that in this case the acquire action should know how to cleanup after itself in case
-   * it gets canceled, since Resource will only guarantee release when acquire succeeds and
-   * fails (and when the actions in `use` or `flatMap` fail, succeed, or get canceled)
+   * it gets canceled, since Resource will only guarantee release when acquire succeeds (and
+   * when the actions in `use` or `flatMap` fail, succeed, or get canceled)
    *
    * @tparam F
    *   the effect type in which the resource is acquired and released
@@ -901,16 +900,16 @@ object Resource extends ResourceFOInstances0 with ResourceHOInstances0 with Reso
     applyFull[F, A](poll => acquire(poll).map(a => (a, _ => release(a))))
 
   /**
-   * Creates a resource from an acquiring effect and a release function that can discriminate
-   * between different [[ExitCase exit cases]].
+   * Creates a resource from a possibly cancelable acquiring effect and a release function that
+   * can discriminate between different [[ExitCase exit cases]].
    *
-   * The acquiring effect takes a `Poll[F]` to allow for interruptible acquires, which is most
+   * The acquiring effect takes a `Poll[F]` to allow for cancelable acquires, which is most
    * often useful when acquiring lock-like structures: it should be possible to interrupt a
    * fiber waiting on a lock, but if it does get acquired, release need to be guaranteed.
    *
    * Note that in this case the acquire action should know how to cleanup after itself in case
-   * it gets canceled, since Resource will only guarantee release when acquire succeeds and
-   * fails (and when the actions in `use` or `flatMap` fail, succeed, or get canceled)
+   * it gets canceled, since Resource will only guarantee release when acquire succeeds (and
+   * when the actions in `use` or `flatMap` fail, succeed, or get canceled)
    *
    * @tparam F
    *   the effect type in which the resource is acquired and released
@@ -1089,23 +1088,22 @@ object Resource extends ResourceFOInstances0 with ResourceHOInstances0 with Reso
               val nt2 = new (Resource[F, *] ~> D) {
                 def apply[A](rfa: Resource[F, A]) =
                   Kleisli { r =>
-                    nt(rfa.allocatedCase) flatMap {
-                      case (a, fin) =>
-                        r.update(f => (ec: ExitCase) => f(ec) !> (F.unit >> fin(ec))).as(a)
+                    G uncancelable { poll =>
+                      poll(nt(rfa.allocatedCase)) flatMap {
+                        case (a, fin) =>
+                          r.update(f => (ec: ExitCase) => f(ec) !> (F.unit >> fin(ec))).as(a)
+                      }
                     }
                   }
               }
 
-              for {
-                r <- nt(F.ref((_: ExitCase) => F.unit).map(_.mapK(nt)))
-
-                a <- G.guaranteeCase(body[D].apply(cb, Kleisli.liftF(ga), nt2).run(r)) {
+              nt(F.ref((_: ExitCase) => F.unit).map(_.mapK(nt))) flatMap { r =>
+                G.guaranteeCase(
+                  (body[D].apply(cb, Kleisli.liftF(ga), nt2).run(r), r.get).tupled) {
                   case Outcome.Succeeded(_) => G.unit
                   case oc => r.get.flatMap(fin => nt(fin(ExitCase.fromOutcome(oc))))
                 }
-
-                fin <- r.get
-              } yield (a, fin)
+              }
             }
           }
         }
@@ -1280,6 +1278,9 @@ private[effect] trait ResourceHOInstances2 extends ResourceHOInstances3 {
       def F = F0
       def applicative = FA
     }
+
+  final implicit def catsEffectDeferForResource[F[_]]: Defer[Resource[F, *]] =
+    new ResourceDefer[F]
 }
 
 private[effect] trait ResourceHOInstances3 extends ResourceHOInstances4 {
@@ -1391,12 +1392,15 @@ abstract private[effect] class ResourceConcurrent[F[_]]
     fa.race(fb)
 
   override def memoize[A](fa: Resource[F, A]): Resource[F, Resource[F, A]] = {
-    Resource.eval(F.ref(false)).flatMap { allocated =>
-      val fa2 = F.uncancelable(poll => poll(fa.allocatedCase) <* allocated.set(true))
+    Resource.eval(F.ref(List.empty[Resource.ExitCase => F[Unit]])).flatMap { release =>
+      val fa2 = F.uncancelable { poll =>
+        poll(fa.allocatedCase).flatMap { case (a, r) => release.update(r :: _).as(a) }
+      }
       Resource
-        .makeCaseFull[F, F[(A, Resource.ExitCase => F[Unit])]](poll => poll(F.memoize(fa2)))(
-          (memo, exit) => allocated.get.ifM(memo.flatMap(_._2.apply(exit)), F.unit))
-        .map(memo => Resource.eval(memo.map(_._1)))
+        .makeCaseFull[F, F[A]](poll => poll(F.memoize(fa2))) { (_, exit) =>
+          release.get.flatMap(_.foldMapM(_(exit)))
+        }
+        .map(memo => Resource.eval(memo))
     }
   }
 }
@@ -1516,4 +1520,8 @@ abstract private[effect] class ResourceSemigroupK[F[_]] extends SemigroupK[Resou
 
   def combineK[A](ra: Resource[F, A], rb: Resource[F, A]): Resource[F, A] =
     ra.combineK(rb)
+}
+
+private[effect] final class ResourceDefer[F[_]] extends Defer[Resource[F, *]] {
+  def defer[A](fa: => Resource[F, A]): Resource[F, A] = Resource.unit.flatMap(_ => fa)
 }
