@@ -148,6 +148,7 @@ private[unsafe] abstract class IORuntimeCompanionPlatform { this: IORuntime.type
   }
 
   def createDefaultScheduler(threadPrefix: String = "io-scheduler"): (Scheduler, () => Unit) = {
+    // MEMO: timer管理？
     val scheduler = new ScheduledThreadPoolExecutor(
       1,
       { r =>

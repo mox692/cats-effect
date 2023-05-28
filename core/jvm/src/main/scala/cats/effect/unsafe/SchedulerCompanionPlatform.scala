@@ -23,6 +23,7 @@ import java.time.temporal.ChronoField
 import java.util.concurrent.{Executors, ScheduledExecutorService}
 
 private[unsafe] abstract class SchedulerCompanionPlatform { this: Scheduler.type =>
+  // MEMO: これ使われてる？
   def createDefaultScheduler(): (Scheduler, () => Unit) = {
     val scheduler = Executors.newSingleThreadScheduledExecutor { r =>
       val t = new Thread(r)
@@ -37,6 +38,7 @@ private[unsafe] abstract class SchedulerCompanionPlatform { this: Scheduler.type
   def fromScheduledExecutor(scheduler: ScheduledExecutorService): Scheduler =
     new Scheduler {
       def sleep(delay: FiniteDuration, task: Runnable): Runnable = {
+        // MEMO: ここで、Javaの ScheduledExecutorService に依存していることに注意
         val future = scheduler.schedule(task, delay.length, delay.unit)
 
         { () =>

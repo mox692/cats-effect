@@ -639,10 +639,10 @@ private final class IOFiber[A](
            * In case of interruption, neither side will continue,
            * and they will negotiate ownership with `cancel` to decide who
            * should run the finalisers (i.e. call `asyncCancel`).
-           * 
+           *
            * `get` と `cb` (コールバック) はランループの上で競合する。cb` が `get` よりも後に終了した場合、
            * `get` は単にサスペンドして終了し、 `cb` は `asyncContinue` を介してランループを再開します。
-           *  もし `get` が勝ったら、 `state` `AtomicRef` から結果を取得して処理を継続し、コールバックはそのまま終了する(`stateLoop`, when `tag == 3`) 
+           *  もし `get` が勝ったら、 `state` `AtomicRef` から結果を取得して処理を継続し、コールバックはそのまま終了する(`stateLoop`, when `tag == 3`)
            *  双方は `state` を通じて互いに通信し、誰が引き継ぐべきか、
            *  また `suspended` (suspend と resume を通じて操作される) を通じて、ランループの所有権を取り交わすことができる。
            *  中断された場合、どちらの側も続行せず、 `cancel` を使って所有権を交渉し、どちらがファイナライザーを実行するかを決定します (つまり、 `asyncCancel` を呼び出します)。
@@ -661,7 +661,7 @@ private final class IOFiber[A](
              *
              * If we were canceled, `cb`, `cancel` and `get` are in a 3-way race
              * to run the finalizers.
-             *  
+             *
              * そこで、`get`によって `state` がセットされたけれども `suspend()` がまだ実行されていないという競合状態を解消するために、
              * (`resume` によって) `suspended` で CAS ループを構成します。もし `state` が設定されていれば、
              *  `suspend()` はそのすぐ後ろにあるはずです *ただし、キャンセルされた場合はこの限りではありません*。
@@ -803,7 +803,7 @@ private final class IOFiber[A](
              * `state` was Initial, so `get` has arrived before the callback,
              * it needs to set the state to `Waiting` and suspend: `cb` will
              * resume with the result once that's ready
-             * 
+             *
              * state` が Initial なので、 `get` はコールバックより先に到着しています。
              * state を `Waiting` にセットして中断する必要があります:`cb` は準備ができ次第、結果を表示して再開します。
              */
@@ -812,7 +812,7 @@ private final class IOFiber[A](
              * we set the finalizing check to the *suspension* point, which may
              * be in a different finalizer scope than the cont itself.
              * `wasFinalizing` is published by a volatile store on `suspended`.
-             * 
+             *
              * ファイナライズチェックを *サスペンド* ポイントに設定します。
              * これは、コンテント自身とは異なるファイナライザースコープにある可能性があります。
              * wasFinalizing` は `suspended` にある volatile store によって発行されます。
@@ -978,9 +978,13 @@ private final class IOFiber[A](
         case 19 =>
           val cur = cur0.asInstanceOf[Sleep]
 
+          // MEMO: .asyncで別のThreadPoolに飛ばしていることに注目
           val next = IO.async[Unit] { cb =>
             IO {
+              // MEMO: ここでSleepが使われる
+              // cbをそのまま読んで継続を再開.
               val cancel = runtime.scheduler.sleep(cur.delay, () => cb(RightUnit))
+              // cancel時の挙動
               Some(IO(cancel.run()))
             }
           }
@@ -1231,7 +1235,7 @@ private final class IOFiber[A](
     //       そしてこのsucceeedの中でStackに積まれている変換処理を逐次実行していく.
     (ByteStack.pop(conts): @switch) match {
       // mapKの場合、objectStateに積んでいたmapの第二引数 f をpop.
-      // 
+      //
       case 0 => // mapK
         val f = objectState.pop().asInstanceOf[Any => Any]
 
