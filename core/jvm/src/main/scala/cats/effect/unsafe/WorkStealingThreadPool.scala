@@ -115,6 +115,7 @@ private[effect] final class WorkStealingThreadPool(
   /**
    * The shutdown latch of the work stealing thread pool.
    */
+  // MEMO: おそらくAppが停止しない限り、ずっとfalse
   private[unsafe] val done: AtomicBoolean = new AtomicBoolean(false)
 
   private[unsafe] val blockedWorkerThreadCounter: AtomicInteger = new AtomicInteger(0)

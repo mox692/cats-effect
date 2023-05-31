@@ -149,6 +149,7 @@ private final class WorkerThread(
 
   def sleep(delay: FiniteDuration, callback: Right[Nothing, Unit] => Unit): Runnable = {
     // note that blockers aren't owned by the pool, meaning we only end up here if !blocking
+    // MEMO: ここの sleep はRunloopから呼ばれる
     sleepers.insert(
       now = System.nanoTime(),
       delay = delay.toNanos,
@@ -356,6 +357,7 @@ private final class WorkerThread(
       var cont = true
       while (cont && !done.get()) {
         // Park the thread until further notice.
+        // MEMO: ここでthreadが止められる
         LockSupport.park(pool)
 
         // the only way we can be interrupted here is if it happened *externally* (probably sbt)
@@ -592,6 +594,7 @@ private final class WorkerThread(
                 _active = null
               }
 
+              // MEMO: parkedのflagをTrueにSet
               parked.lazySet(true)
               // Announce that the worker thread is parking.
               pool.transitionWorkerToParked()

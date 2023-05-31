@@ -343,6 +343,7 @@ trait IOApp {
         // MEMO: このclosureの中が (global) runtime を生成しているところ
 
         // MEMO: compute-pool と compute-pool のシャットダウンがtupleで返されている
+        // MEMO: scheduler pool が 3.5.x移行で消されている
         val (compute, compDown) =
           IORuntime.createWorkStealingComputeThreadPool(
             threads = computeWorkerThreadCount,
