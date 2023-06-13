@@ -17,71 +17,50 @@
 package cats.effect
 package unsafe
 
-import scala.concurrent.{ExecutionContext, ExecutionContextExecutor}
+import scala.concurrent.ExecutionContextExecutor
 import scala.concurrent.duration._
-import scala.scalanative.libc.errno
-import scala.scalanative.meta.LinktimeInfo
-import scala.scalanative.unsafe._
-import scala.util.control.NonFatal
 
-import java.util.{ArrayDeque, PriorityQueue}
-
+@deprecated("Use default runtime with a custom PollingSystem", "3.6.0")
 abstract class PollingExecutorScheduler(pollEvery: Int)
     extends ExecutionContextExecutor
-    with Scheduler {
+    with Scheduler { outer =>
 
-  private[this] var needsReschedule: Boolean = true
+  private[this] val loop = new EventLoopExecutorScheduler(
+    pollEvery,
+    new PollingSystem {
+      type Api = outer.type
+      type Poller = outer.type
+      private[this] var needsPoll = true
+      def close(): Unit = ()
+      def makeApi(register: (Poller => Unit) => Unit): Api = outer
+      def makePoller(): Poller = outer
+      def closePoller(poller: Poller): Unit = ()
+      def poll(poller: Poller, nanos: Long, reportFailure: Throwable => Unit): Boolean = {
+        needsPoll =
+          if (nanos == -1)
+            poller.poll(Duration.Inf)
+          else
+            poller.poll(nanos.nanos)
+        true
+      }
+      def needsPoll(poller: Poller) = needsPoll
+      def interrupt(targetThread: Thread, targetPoller: Poller): Unit = ()
+    }
+  )
 
-  // MEMO: RunnableのQueueとSleepTaskのQueueの2つがある
-  private[this] val executeQueue: ArrayDeque[Runnable] = new ArrayDeque
-  private[this] val sleepQueue: PriorityQueue[SleepTask] = new PriorityQueue
-
-  private[this] val noop: Runnable = () => ()
-
-  private[this] def scheduleIfNeeded(): Unit = if (needsReschedule) {
-    // TODO: loopは別スレッドで実行されるはず、
-    //       Executorの実装を確認
-    // MEMO: work-strealingっぽいアルゴリズムが適用されてる？( ExecutionContext.globalのコメントより)
-    ExecutionContext.global.execute(() => loop())
-    needsReschedule = false
-  }
-
-  // MEMO: nativeの(compute)thread-poolのエントリ
-  final def execute(runnable: Runnable): Unit = {
-    scheduleIfNeeded()
-    executeQueue.addLast(runnable)
-    // MEMO: 起動したスレッド(loopを別スレッドで呼び出したスレッド)はここでexitする
-  }
+  final def execute(runnable: Runnable): Unit =
+    loop.execute(runnable)
 
   final def sleep(delay: FiniteDuration, task: Runnable): Runnable =
-    if (delay <= Duration.Zero) {
-      execute(task)
-      noop
-    } else {
-      scheduleIfNeeded()
-      val now = monotonicNanos()
-      val sleepTask = new SleepTask(now + delay.toNanos, task)
-      sleepQueue.offer(sleepTask)
-      sleepTask
-    }
+    loop.sleep(delay, task)
 
-  def reportFailure(t: Throwable): Unit = t.printStackTrace()
+  def reportFailure(t: Throwable): Unit = loop.reportFailure(t)
 
-  def nowMillis() = System.currentTimeMillis()
+  def nowMillis() = loop.nowMillis()
 
-  override def nowMicros(): Long =
-    if (LinktimeInfo.isFreeBSD || LinktimeInfo.isLinux || LinktimeInfo.isMac) {
-      import scala.scalanative.posix.time._
-      import scala.scalanative.posix.timeOps._
-      val ts = stackalloc[timespec]()
-      if (clock_gettime(CLOCK_REALTIME, ts) != 0)
-        throw new RuntimeException(s"clock_gettime: ${errno.errno}")
-      ts.tv_sec * 1000000 + ts.tv_nsec / 1000
-    } else {
-      super.nowMicros()
-    }
+  override def nowMicros(): Long = loop.nowMicros()
 
-  def monotonicNanos() = System.nanoTime()
+  def monotonicNanos() = loop.monotonicNanos()
 
   /**
    * @param timeout
@@ -95,71 +74,5 @@ abstract class PollingExecutorScheduler(pollEvery: Int)
    *   whether poll should be called again (i.e., there are more events to be polled)
    */
   protected def poll(timeout: Duration): Boolean
-
-  private[this] def loop(): Unit = {
-    needsReschedule = false
-
-    var continue = true
-
-    while (continue) {
-      // execute the timers
-      val now = monotonicNanos()
-
-      // MEMO: timer完了taskを実行する
-      // queuがからじゃない && 時間切れtimerが存在する
-      while (!sleepQueue.isEmpty() && sleepQueue.peek().at <= now) {
-        val task = sleepQueue.poll()
-        try task.runnable.run()
-        catch {
-          case t if NonFatal(t) => reportFailure(t)
-          case t: Throwable => IOFiber.onFatalFailure(t)
-        }
-      }
-
-      // MEMO: pollEveryはデフォルトで64
-      // do up to pollEvery tasks
-      var i = 0
-      while (i < pollEvery && !executeQueue.isEmpty()) {
-        // TODO: これqueueに64個もtaskが積まれる状況ってどんな状況？？
-        val runnable = executeQueue.poll()
-        try runnable.run()
-        catch {
-          case t if NonFatal(t) => reportFailure(t)
-          case t: Throwable => IOFiber.onFatalFailure(t)
-        }
-        i += 1
-      }
-
-      // finally we poll
-      val timeout =
-        if (!executeQueue.isEmpty())
-          Duration.Zero
-        else if (!sleepQueue.isEmpty())
-          Math.max(sleepQueue.peek().at - monotonicNanos(), 0).nanos
-        else
-          Duration.Inf
-
-      val needsPoll = poll(timeout)
-
-      continue = needsPoll || !executeQueue.isEmpty() || !sleepQueue.isEmpty()
-    }
-
-    needsReschedule = true
-  }
-
-  private[this] final class SleepTask(
-      val at: Long,
-      val runnable: Runnable
-  ) extends Runnable
-      with Comparable[SleepTask] {
-
-    def run(): Unit = {
-      sleepQueue.remove(this)
-      ()
-    }
-
-    def compareTo(that: SleepTask): Int =
-      java.lang.Long.compare(this.at, that.at)
-  }
 
 }
