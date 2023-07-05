@@ -166,6 +166,7 @@ trait IOApp {
   // MEMO: ここではデフォルトの IORuntimeConfig が取得される
   protected def runtimeConfig: unsafe.IORuntimeConfig = unsafe.IORuntimeConfig()
 
+  // MEMO: IOAppの初期化時にpolling systemが決まる
   protected def pollingSystem: unsafe.PollingSystem =
     unsafe.IORuntime.createDefaultPollingSystem()
 

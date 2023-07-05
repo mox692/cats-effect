@@ -363,12 +363,7 @@ private final class WorkerThread[P](
     def parkLoop(): Boolean = {
       while (!done.get()) {
         // Park the thread until further notice.
-        <<<<<<< HEAD
-          // MEMO: ここでthreadが止められる
-          LockSupport.park(pool)
-        =======
         val polled = system.poll(_poller, -1, reportFailure)
-          >>>>>>> upstream / series / 3.x
 
         // the only way we can be interrupted here is if it happened *externally* (probably sbt)
         if (isInterrupted()) {

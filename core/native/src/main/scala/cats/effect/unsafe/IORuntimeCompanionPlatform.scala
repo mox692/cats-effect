@@ -55,11 +55,13 @@ private[unsafe] abstract class IORuntimeCompanionPlatform { this: IORuntime.type
   private[effect] def resetGlobal(): Unit =
     _global = null
 
+  // MEMO: ここがRuntime作成のエントリ
   def global: IORuntime = {
     if (_global == null) {
       installGlobal {
         val (loop, poller, loopDown) = createEventLoop(createDefaultPollingSystem())
         IORuntime(
+          // MEMO: 実質ここのworker threadのところしか使われない気がする.
           loop,
           loop,
           loop,
